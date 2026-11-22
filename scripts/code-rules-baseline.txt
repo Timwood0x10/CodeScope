@@ -5,6 +5,7 @@ fields|engine/src/engine_index_sched.h|SchedState|13
 fields|engine/src/filter_policy.h|FilterPolicy|23
 fields|engine/src/graph/graph_types.h|GraphNode|14
 fields|engine/src/ir/semantic_unit.h|Record|19
+file|engine/src/store/store_graph.cpp|-|1003
 function|engine/src/async_knowledge.cpp|populateModulesHierarchy|178
 function|engine/src/engine_ffi.cpp|engine_get_capabilities|128
 function|engine/src/engine_ffi_graph.cpp|engine_get_knowledge_graph|149
@@ -18,7 +19,7 @@ function|engine/src/engine_queries.cpp|enhanceProjectImpl|231
 function|engine/src/engine_queries.cpp|findSymbolImpl|150
 function|engine/src/engine_queries_context.cpp|buildContextImpl|151
 function|engine/src/engine_queries_context.cpp|detectFfiBoundariesImpl|274
-function|engine/src/engine_queries_context.cpp|exploreFunctionImpl|169
+function|engine/src/engine_queries_context.cpp|exploreFunctionImpl|148
 function|engine/src/engine_queries_context.cpp|tracePathImpl|154
 function|engine/src/engine_verify_ffi.cpp|verify_one_claim|165
 function|engine/src/filter_policy.cpp|FilterPolicy::FilterPolicy|663
@@ -33,8 +34,7 @@ function|engine/src/ir/builtin_registry_systems.cpp|rustBuiltins|142
 function|engine/src/ir/translators/c_translator.cpp|CTranslator::translateNode|204
 function|engine/src/ir/translators/c_visitor.cpp|CVisitor::handleCall|180
 function|engine/src/ir/translators/cpp_translator.cpp|CppTranslator::translateNode|226
-function|engine/src/ir/translators/go_visitor.cpp|GoVisitor::handleMethodDecl|129
-function|engine/src/ir/translators/go_visitor.cpp|GoVisitor::visit|138
+function|engine/src/ir/translators/go_visitor.cpp|GoVisitor::visit|132
 function|engine/src/ir/translators/go_visitor_calls.cpp|GoVisitor::handleCall|314
 function|engine/src/ir/translators/go_visitor_calls.cpp|GoVisitor::handleTypeDecl|216
 function|engine/src/ir/translators/java_translator.cpp|JavaTranslator::translateNode|193
@@ -66,13 +66,13 @@ function|engine/src/query/query_communities.cpp|QueryEngine::getCommunities|308
 function|engine/src/query/query_engine.cpp|QueryEngine::findReferences|121
 function|engine/src/query/query_engine_traverse.cpp|QueryEngine::getNeighbors|146
 function|engine/src/query/query_engine_traverse.cpp|QueryEngine::getSubgraph|134
-function|engine/src/resolver/pipeline.cpp|ResolverPipeline::run|858
+function|engine/src/resolver/pipeline.cpp|ResolverPipeline::run|851
 function|engine/src/resolver/pipeline_apply.cpp|ResolverPipeline::applyConstraints|388
-function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadDispatchIndex|275
+function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadDispatchIndex|270
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadEntityIndex|211
 function|engine/src/store/store_batch.cpp|GraphStore::insertFileResultBatch|395
 function|engine/src/store/store_core.cpp|GraphStore::open|126
-function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|882
+function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|877
 function|engine/src/store/store_graph_csr.cpp|GraphStore::buildCSR|238
 function|engine/src/store/store_insert.cpp|GraphStore::deleteGraphDataByFile|163
 function|engine/src/store/store_project.cpp|GraphStore::findSymbolJson|134
