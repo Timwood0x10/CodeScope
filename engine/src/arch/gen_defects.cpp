@@ -41,26 +41,41 @@ namespace
 /// "fmt/" (Go), "os/" (Go/Python), "sys/" (Python), etc.
 bool isStandardLibrary(const std::string &target)
 {
+	// Strip the include delimiters so "<vector>" and "vector" agree.
+	std::string t = target;
+	if (t.size() >= 2 && ((t.front() == '"' && t.back() == '"') ||
+			      (t.front() == '<' && t.back() == '>')))
+		t = t.substr(1, t.size() - 2);
+	// POSIX system header trees: <sys/socket.h>, <bits/...>, <linux/...>.
+	// Without this a standard header with a directory prefix was reported
+	// as an unresolved project dependency.
+	static const char *const kSystemDirs[] = {
+		"sys/",	    "bits/", "linux/", "asm/",	  "asm-generic/",
+		"netinet/", "arpa/", "net/",   "machine/"
+	};
+	for (const char *dir : kSystemDirs)
+		if (t.rfind(dir, 0) == 0)
+			return true;
 	// Rust/C++ standard library.
-	if (target.rfind("std::", 0) == 0)
+	if (t.rfind("std::", 0) == 0)
 		return true;
 	// C standard library headers.
-	if (target.rfind("stdio", 0) == 0 || target.rfind("stdlib", 0) == 0 ||
-	    target.rfind("string", 0) == 0 || target.rfind("math", 0) == 0 ||
-	    target.rfind("ctype", 0) == 0 || target.rfind("time", 0) == 0 ||
-	    target.rfind("errno", 0) == 0 || target.rfind("assert", 0) == 0 ||
-	    target.rfind("stdint", 0) == 0 || target.rfind("stddef", 0) == 0 ||
-	    target.rfind("stdbool", 0) == 0)
+	if (t.rfind("stdio", 0) == 0 || t.rfind("stdlib", 0) == 0 ||
+	    t.rfind("string", 0) == 0 || t.rfind("math", 0) == 0 ||
+	    t.rfind("ctype", 0) == 0 || t.rfind("time", 0) == 0 ||
+	    t.rfind("errno", 0) == 0 || t.rfind("assert", 0) == 0 ||
+	    t.rfind("stdint", 0) == 0 || t.rfind("stddef", 0) == 0 ||
+	    t.rfind("stdbool", 0) == 0)
 		return true;
 	// Go standard library.
-	if (target.rfind("fmt", 0) == 0 || target.rfind("os", 0) == 0 ||
-	    target.rfind("io", 0) == 0 || target.rfind("net", 0) == 0 ||
-	    target.rfind("http", 0) == 0 || target.rfind("strings", 0) == 0 ||
-	    target.rfind("strconv", 0) == 0 || target.rfind("sort", 0) == 0 ||
-	    target.rfind("sync", 0) == 0 || target.rfind("context", 0) == 0 ||
-	    target.rfind("errors", 0) == 0 || target.rfind("reflect", 0) == 0 ||
-	    target.rfind("encoding", 0) == 0 || target.rfind("path", 0) == 0 ||
-	    target.rfind("time", 0) == 0)
+	if (t.rfind("fmt", 0) == 0 || t.rfind("os", 0) == 0 ||
+	    t.rfind("io", 0) == 0 || t.rfind("net", 0) == 0 ||
+	    t.rfind("http", 0) == 0 || t.rfind("strings", 0) == 0 ||
+	    t.rfind("strconv", 0) == 0 || t.rfind("sort", 0) == 0 ||
+	    t.rfind("sync", 0) == 0 || t.rfind("context", 0) == 0 ||
+	    t.rfind("errors", 0) == 0 || t.rfind("reflect", 0) == 0 ||
+	    t.rfind("encoding", 0) == 0 || t.rfind("path", 0) == 0 ||
+	    t.rfind("time", 0) == 0)
 		return true;
 	// Python standard library.
 	if (target.rfind("os", 0) == 0 || target.rfind("sys", 0) == 0 ||
@@ -95,8 +110,11 @@ bool isStandardLibrary(const std::string &target)
 ///                         that failed to match a known module.
 static std::string classifyUnresolvedReason(const std::string &raw_target)
 {
+	// An empty raw_target means "not recorded", not a header name: counting
+	// it as bare_header would inflate the one bucket that means "likely a
+	// system header" with rows that carry no evidence at all.
 	if (raw_target.empty())
-		return "bare_header";
+		return "unknown";
 
 	// POSIX absolute path.
 	if (raw_target[0] == '/')
@@ -174,17 +192,17 @@ static DependencyStats buildDepStats(const std::vector<EdgeRow> &edges)
 			++stats.external_count;
 		else if (e.resolution_kind == "unresolved") {
 			++stats.unresolved_count;
-			// Classify using raw_target (the original import syntax)
-			// not dst_module (which may have been folded/normalized).
-			const std::string &classify_src = e.raw_target.empty() ?
-								  e.dst_module :
-								  e.raw_target;
+			// Classify from raw_target only: dst_module is folded and,
+			// when raw_target is empty, using it would turn "not
+			// recorded" into a confident cross-dir verdict.
 			std::string reason =
-				classifyUnresolvedReason(classify_src);
+				classifyUnresolvedReason(e.raw_target);
 			if (reason == "bare_header")
 				++stats.bare_header_count;
 			else if (reason == "absolute_path")
 				++stats.absolute_path_count;
+			else if (reason == "unknown")
+				++stats.unknown_count;
 			else
 				++stats.cross_dir_relative_count;
 		}
@@ -204,17 +222,13 @@ static DependencyStats buildDepStats(const std::vector<EdgeRow> &edges)
 /// Emit a dependency_anomaly candidate for one unresolved edge.
 static void emitAnomalyCandidate(const EdgeRow &e, DefectResult &result)
 {
-	// Skip standard library — it may appear as unresolved when the
-	// indexer lacks language-specific stdlib knowledge.
-	if (isStandardLibrary(e.dst_module))
+	// Classify and gate from raw_target only: dst_module is folded, so a
+	// folded path looks project-relative and "<sys/types.h>" would be
+	// reported as a dependency anomaly.
+	const std::string &raw = e.raw_target;
+	if (isStandardLibrary(raw))
 		return;
-
-	// Classify using raw_target (the original import syntax) not
-	// dst_module (which may have been folded/normalized by
-	// resolveRelativeTarget + foldPath in module_graph.cpp).
-	const std::string &classify_src = e.raw_target.empty() ? e.dst_module :
-								 e.raw_target;
-	std::string reason = classifyUnresolvedReason(classify_src);
+	std::string reason = classifyUnresolvedReason(raw);
 
 	DefectCandidate d;
 	d.category = "dependency_anomaly";
@@ -222,7 +236,12 @@ static void emitAnomalyCandidate(const EdgeRow &e, DefectResult &result)
 	d.src_module = e.src_module;
 	d.file_path = e.source_file;
 	d.row = e.source_row;
-	d.confidence = 0.4;
+	// How strongly the reason points at a declaration problem:
+	// a project-internal path no module matches is the strongest signal,
+	// an absolute path is often external, and "unknown" has no evidence.
+	d.confidence = reason == "cross_dir_relative" ? 0.5 :
+		       reason == "absolute_path"      ? 0.2 :
+							0.3;
 	d.reason = reason;
 	d.description = "Unresolved import: module '" + e.src_module +
 			"' imports '" + e.dst_module +

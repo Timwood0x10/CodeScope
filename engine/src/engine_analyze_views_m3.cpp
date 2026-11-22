@@ -193,6 +193,7 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 	w.key("bare_header").value(ds.bare_header_count);
 	w.key("absolute_path").value(ds.absolute_path_count);
 	w.key("cross_dir_relative").value(ds.cross_dir_relative_count);
+	w.key("unknown").value(ds.unknown_count);
 	w.endObject();
 	w.endObject();
 

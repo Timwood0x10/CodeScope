@@ -69,6 +69,9 @@ struct DependencyStats {
 	int bare_header_count = 0;
 	int absolute_path_count = 0;
 	int cross_dir_relative_count = 0;
+	/// Edges whose raw target was not recorded: no evidence either way, so
+	/// they are counted apart instead of being merged into bare_header.
+	int unknown_count = 0;
 };
 
 /// Result of §8.4 generated-code defect detection.

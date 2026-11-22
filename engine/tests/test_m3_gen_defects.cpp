@@ -386,6 +386,72 @@ static void testReasonClassificationAndStats()
 	std::fprintf(stderr, "  [test] reason classification & stats: PASS\n");
 }
 
+// ── Test 6b: reason edge cases ───────────────────────────────
+//
+// An empty raw_target is "not recorded", not a header name, and a standard
+// header with a directory prefix must not become a dependency anomaly.
+static void testReasonEdgeCases()
+{
+	std::fprintf(stderr, "  [test] reason edge cases...\n");
+
+	store::GraphStore store;
+	CHECK(store.open(kDbPath));
+
+	uint64_t project_id = 1;
+	execSql(store, "DELETE FROM arch_edge WHERE project_id=1");
+	execSql(store, "DELETE FROM arch_module WHERE project_id=1");
+
+	// No raw_target recorded for this row. insertEdgeFull defaults raw to
+	// the destination, so the truly empty case is written directly.
+	execSql(store,
+		"INSERT OR IGNORE INTO arch_edge (project_id, src_module, "
+		"dst_module, edge_kind, resolution_kind, confidence, "
+		"source_file, source_row, raw_target) VALUES "
+		"(1,'src/core','pkg/missing.h','import','unresolved',0.0,"
+		"'src/core/main.cpp',30,'')");
+	// System headers with a directory prefix.
+	insertEdgeFull(store, project_id, "src/core", "sys/types.h",
+		       "unresolved", 0.0, "src/core/main.cpp", 31,
+		       "<sys/types.h>");
+	insertEdgeFull(store, project_id, "src/core", "bits/alltypes.h",
+		       "unresolved", 0.0, "src/core/main.cpp", 32,
+		       "<bits/alltypes.h>");
+	// A project-internal path: the strongest anomaly signal.
+	insertEdgeFull(store, project_id, "src/core", "include/missing.h",
+		       "unresolved", 0.0, "src/core/main.cpp", 33,
+		       "../include/missing.h");
+
+	auto result = arch::detectGenDefects(store, project_id);
+	CHECK_MSG(result.error.empty(), "should not error");
+
+	// The empty target is counted apart instead of as bare_header.
+	CHECK_MSG(result.dep_stats.unknown_count == 1,
+		  "empty raw_target should count as unknown");
+	CHECK_MSG(result.dep_stats.bare_header_count == 0,
+		  "empty raw_target must not count as bare_header");
+
+	// Standard headers stay out of the candidate list.
+	int sys_anomalies = 0;
+	for (const auto &c : result.candidates) {
+		if (c.target == "sys/types.h" || c.target == "bits/alltypes.h")
+			++sys_anomalies;
+		if (c.reason == "cross_dir_relative")
+			CHECK_MSG(c.confidence > 0.49,
+				  "cross-dir anomaly should be 0.5");
+		if (c.reason == "unknown")
+			CHECK_MSG(c.confidence > 0.29 && c.confidence < 0.31,
+				  "unknown anomaly should be 0.3");
+	}
+	CHECK_MSG(sys_anomalies == 0,
+		  "standard headers must not be dependency anomalies");
+	CHECK_MSG(
+		hasAnomalyWithReason(result, "unknown"),
+		"empty raw_target should still surface as an unknown anomaly");
+
+	store.close();
+	std::fprintf(stderr, "  [test] reason edge cases: PASS\n");
+}
+
 // ── Test 7: Each anomaly carries source_file + source_row + module pair ──
 static void testAnomalySourceLocationAndModulePair()
 {
@@ -952,6 +1018,7 @@ int main()
 	testEmptyDatabase();
 	testStandardLibraryExclusion();
 	testReasonClassificationAndStats();
+	testReasonEdgeCases();
 	testAnomalySourceLocationAndModulePair();
 	testFoldablePathsClassifiedByRawTarget();
 	testWindowsAbsolutePathClassification();
