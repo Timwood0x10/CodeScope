@@ -11,6 +11,40 @@
 
 namespace engine_arch
 {
+namespace
+{
+
+/// COUNT(*) of a statement with one project_id parameter, or -1 on failure.
+int64_t countFor(sqlite3 *db, const char *sql, uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return -1;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	int64_t n = -1;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		n = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return n;
+}
+
+} // namespace
+
+bool layerMissing(store::GraphStore &store, uint64_t project_id)
+{
+	sqlite3 *db = store.handle();
+	if (!db)
+		return false;
+	const int64_t entities =
+		countFor(db, "SELECT COUNT(*) FROM entity WHERE project_id=?",
+			 project_id);
+	if (entities <= 0)
+		return false; // an empty project legitimately has no edges
+	const int64_t edges = countFor(
+		db, "SELECT COUNT(*) FROM arch_edge WHERE project_id=?",
+		project_id);
+	return edges == 0;
+}
 
 void buildLayer(store::GraphStore &store, uint64_t project_id)
 {

@@ -558,17 +558,20 @@ static void testArchLayerWiring()
 		       "VALUES (100,1,1,'controller')");
 	const std::string imp_sql =
 		"INSERT INTO import (project_id, source_scope_id, target_path, "
-		"file_path) VALUES (1,100,'../store/repo.h','" +
-		root + "/src/api/controller.cpp')";
+		"file_path, source_row) VALUES (1,100,'../store/repo.h','" +
+		root + "/src/api/controller.cpp',42)";
 	execSql(store, imp_sql.c_str());
 
 	engine_arch::buildLayer(store, 1);
 
 	// The include is relative to its file, so the edge resolves to the store
-	// module instead of staying an unresolved "../store/repo.h".
+	// module instead of staying an unresolved "../store/repo.h", and the
+	// import's own line number reaches the edge instead of a fixed 0.
 	CHECK(countRows(store,
 			"SELECT COUNT(*) FROM arch_edge WHERE project_id=1 "
 			"AND resolution_kind='internal'") == 1);
+	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_edge "
+			       "WHERE project_id=1 AND source_row=42") == 1);
 	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_module "
 			       "WHERE project_id=1") >= 2);
 	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_entry_point "
@@ -579,6 +582,17 @@ static void testArchLayerWiring()
 			       "WHERE project_id=1") == 1);
 	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_layer_decl "
 			       "WHERE project_id=1") == 2);
+
+	// The probe the analysis views use to decide whether to rebuild: a layer
+	// emptied by a schema upgrade must be rebuilt before it is judged,
+	// because an empty arch_edge would otherwise read as "no dependencies".
+	CHECK(!engine_arch::layerMissing(store, 1));
+	execSql(store, "DELETE FROM arch_edge WHERE project_id=1");
+	CHECK(engine_arch::layerMissing(store, 1));
+	engine_arch::buildLayer(store, 1);
+	CHECK(!engine_arch::layerMissing(store, 1));
+	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_edge "
+			       "WHERE project_id=1") >= 1);
 
 	std::filesystem::remove_all(root, ec);
 	store.close();

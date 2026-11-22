@@ -16,6 +16,7 @@
 #include "arch/gen_defects.h"
 #include "arch/incremental_verify.h"
 #include "arch/robustness.h"
+#include "engine_arch_build.h"
 #include "engine_internal.h"
 #include "util/json_writer.h"
 #include "verify/drift_adapter.h"
@@ -113,6 +114,11 @@ char *buildRobustness(EngineContext *ctx, uint64_t project_id)
 
 char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 {
+	// A schema upgrade deletes arch_edge and lets the next build repopulate
+	// it. Answering before that reports "no dependencies" as a fact, so the
+	// layer is rebuilt here instead of returning an empty dependency_stats.
+	if (engine_arch::layerMissing(*ctx->store, project_id))
+		engine_arch::buildLayer(*ctx->store, project_id);
 	auto result = arch::detectGenDefects(*ctx->store, project_id);
 
 	util::JsonWriter w;
@@ -147,6 +153,10 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 		w.key("confidence").value(d.confidence);
 		w.key("source").value(d.source);
 		w.key("evidence_basis").value(d.evidence_basis);
+		if (!d.reason.empty())
+			w.key("reason").value(d.reason);
+		if (!d.src_module.empty())
+			w.key("src_module").value(d.src_module);
 		w.endObject();
 	}
 	w.endArray();
@@ -167,6 +177,23 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 	w.key("duplicate_implementation")
 		.value(by_category["duplicate_implementation"]);
 	w.key("invalid_abstraction").value(by_category["invalid_abstraction"]);
+	w.endObject();
+
+	// Dependency resolution statistics (§12.4 M3-2).
+	const auto &ds = result.dep_stats;
+	w.key("dependency_stats").beginObject();
+	w.key("total").value(ds.total);
+	w.key("internal").value(ds.internal_count);
+	w.key("external").value(ds.external_count);
+	w.key("unresolved").value(ds.unresolved_count);
+	w.key("internal_ratio").value(ds.internal_ratio);
+	w.key("external_ratio").value(ds.external_ratio);
+	w.key("unresolved_ratio").value(ds.unresolved_ratio);
+	w.key("unresolved_breakdown").beginObject();
+	w.key("bare_header").value(ds.bare_header_count);
+	w.key("absolute_path").value(ds.absolute_path_count);
+	w.key("cross_dir_relative").value(ds.cross_dir_relative_count);
+	w.endObject();
 	w.endObject();
 
 	w.key("verdict").value("observation_only");
@@ -226,6 +253,10 @@ char *buildReverify(EngineContext *ctx, uint64_t project_id,
 char *buildDrift(EngineContext *ctx, uint64_t project_id,
 		 const std::string &run_id)
 {
+	// Same reason as gen_defects: drift reads arch_edge, and a layer left
+	// empty by a schema upgrade must be rebuilt before it is judged.
+	if (engine_arch::layerMissing(*ctx->store, project_id))
+		engine_arch::buildLayer(*ctx->store, project_id);
 	auto result =
 		verify::detectAndPersistDrift(*ctx->store, project_id, run_id);
 

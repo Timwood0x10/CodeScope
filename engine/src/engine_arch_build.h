@@ -32,6 +32,19 @@ namespace engine_arch
 /// @param project_id Project whose architecture rows are rebuilt.
 void buildLayer(store::GraphStore &store, uint64_t project_id);
 
+/// True when the project has callables but no structural edge.
+///
+/// That is the state a schema upgrade leaves behind: migration 18 deletes
+/// `arch_edge` so the next build repopulates it, and a reader that arrives
+/// first would report "no dependencies" as a measured fact. Views that depend
+/// on the layer call this and rebuild instead of answering zero.
+///
+/// @param store Open store.
+/// @param project_id Project to check.
+/// @return False for an empty project (no edges is correct there) and for any
+///         store error (the caller must not rebuild on a failed probe).
+bool layerMissing(store::GraphStore &store, uint64_t project_id);
+
 } // namespace engine_arch
 
 #endif // CODESCOPE_ENGINE_ARCH_BUILD_H
