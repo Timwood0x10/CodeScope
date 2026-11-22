@@ -138,7 +138,9 @@ class Fixture {
 		Exec("ALTER TABLE entity DROP COLUMN callable_signature;"
 		     "ALTER TABLE semantic_records DROP COLUMN callable_signature;"
 		     "ALTER TABLE semantic_records DROP COLUMN is_definition;"
-		     "DELETE FROM schema_meta WHERE version=12;"
+		     "ALTER TABLE arch_edge DROP COLUMN raw_target;"
+		     "ALTER TABLE import DROP COLUMN source_row;"
+		     "DELETE FROM schema_meta WHERE version>=12;"
 		     "PRAGMA user_version=11;");
 		engine_.reset();
 		Open();

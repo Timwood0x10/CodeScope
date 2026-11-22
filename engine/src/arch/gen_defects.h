@@ -37,12 +37,46 @@ struct DefectCandidate {
 	std::string source = "inferred";
 	/// Evidence basis: what facts led to this candidate.
 	std::string evidence_basis;
+	/// Reason sub-classification (dependency_anomaly only):
+	/// "bare_header" — no path separator, likely a header-only include;
+	/// "absolute_path" — starts with '/', outside project root;
+	/// "cross_dir_relative" — contains '/' but not foldable to a
+	/// known module (e.g. "../include/xxx.h" that escaped folding).
+	std::string reason;
+	/// Source module (dependency_anomaly only): the module that owns
+	/// the import. Together with `target` forms a module pair.
+	std::string src_module;
+};
+
+/// Statistics on arch_edge resolution kinds (§12.4 M3-2).
+/// Used to report the ratio of unresolved / external / internal edges.
+struct DependencyStats {
+	/// Total number of arch_edge rows for the project.
+	int total = 0;
+	/// Edges resolved to a known project module.
+	int internal_count = 0;
+	/// Edges pointing to an external package (not a project module).
+	int external_count = 0;
+	/// Edges whose target could not be resolved.
+	int unresolved_count = 0;
+	/// Convenience: unresolved / total (0.0–1.0).
+	double unresolved_ratio = 0.0;
+	/// Convenience: external / total (0.0–1.0).
+	double external_ratio = 0.0;
+	/// Convenience: internal / total (0.0–1.0).
+	double internal_ratio = 0.0;
+	/// Breakdown of unresolved edges by reason sub-classification.
+	int bare_header_count = 0;
+	int absolute_path_count = 0;
+	int cross_dir_relative_count = 0;
 };
 
 /// Result of §8.4 generated-code defect detection.
 struct DefectResult {
 	/// All defect candidates (L2 observations).
 	std::vector<DefectCandidate> candidates;
+	/// Dependency resolution statistics (§12.4 M3-2).
+	DependencyStats dep_stats;
 	/// Error message on failure; empty on success.
 	std::string error;
 };

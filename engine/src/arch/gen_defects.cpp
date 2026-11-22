@@ -23,7 +23,6 @@
 
 #include "store/store.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <sqlite3.h>
@@ -79,15 +78,180 @@ bool isStandardLibrary(const std::string &target)
 	return false;
 }
 
-/// Detect dependency declaration anomalies.
-/// An import is anomalous if:
-/// - It has resolution_kind = "unresolved" (target path cannot be parsed),
-/// - OR it references an external package that is not standard library
-///   AND not a known project module.
+/// Classify why an unresolved target could not be resolved.
+/// Uses the *raw* import target (as written by the developer), not
+/// the folded/normalized dst_module, so that a relative import like
+/// "../../include/missing.h" is classified by its original syntax
+/// even though foldPath collapsed it to an absolute-looking path.
 ///
-/// We exclude standard library, local modules (in arch_module), and
-/// legitimate external packages (already marked "external" in arch_edge).
-/// Only "unresolved" edges are flagged.
+/// Returns one of:
+/// "bare_header"        — no path separator, likely a header-only
+///                         include (e.g. "vector", "stdio.h");
+/// "absolute_path"      — POSIX absolute ('/') or Windows drive
+///                         letter ('C:\\' or 'C:/') or UNC
+///                         ('\\\\server\\share');
+/// "cross_dir_relative" — contains '/' or '\\' but is not absolute;
+///                         includes folded "../include/x.h" paths
+///                         that failed to match a known module.
+static std::string classifyUnresolvedReason(const std::string &raw_target)
+{
+	if (raw_target.empty())
+		return "bare_header";
+
+	// POSIX absolute path.
+	if (raw_target[0] == '/')
+		return "absolute_path";
+
+	// Windows UNC path: \\server\share\...
+	if (raw_target.size() >= 2 && raw_target[0] == '\\' &&
+	    raw_target[1] == '\\')
+		return "absolute_path";
+
+	// Windows drive-letter path: C:\... or C:/...
+	if (raw_target.size() >= 3 &&
+	    ((raw_target[0] >= 'A' && raw_target[0] <= 'Z') ||
+	     (raw_target[0] >= 'a' && raw_target[0] <= 'z')) &&
+	    raw_target[1] == ':' &&
+	    (raw_target[2] == '\\' || raw_target[2] == '/'))
+		return "absolute_path";
+
+	// No path separator at all → bare header name.
+	if (raw_target.find('/') == std::string::npos &&
+	    raw_target.find('\\') == std::string::npos)
+		return "bare_header";
+
+	return "cross_dir_relative";
+}
+
+/// Collect all arch_edge rows for the project and build a vector of
+/// (resolution_kind, src_module, dst_module, source_file, source_row).
+struct EdgeRow {
+	std::string resolution_kind;
+	std::string src_module;
+	std::string dst_module;
+	std::string raw_target;
+	std::string source_file;
+	int source_row;
+};
+
+static bool loadAllEdges(sqlite3 *db, uint64_t project_id,
+			 std::vector<EdgeRow> &out)
+{
+	const char *sql = "SELECT resolution_kind, src_module, dst_module, "
+			  "raw_target, source_file, source_row "
+			  "FROM arch_edge WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		EdgeRow row;
+		auto text = [&](int col) -> std::string {
+			const unsigned char *t = sqlite3_column_text(stmt, col);
+			return t ? reinterpret_cast<const char *>(t) : "";
+		};
+		row.resolution_kind = text(0);
+		row.src_module = text(1);
+		row.dst_module = text(2);
+		row.raw_target = text(3);
+		row.source_file = text(4);
+		row.source_row = sqlite3_column_int(stmt, 5);
+		out.push_back(std::move(row));
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+/// Build DependencyStats from a list of edge rows.
+static DependencyStats buildDepStats(const std::vector<EdgeRow> &edges)
+{
+	DependencyStats stats;
+	stats.total = static_cast<int>(edges.size());
+	for (const auto &e : edges) {
+		if (e.resolution_kind == "internal")
+			++stats.internal_count;
+		else if (e.resolution_kind == "external")
+			++stats.external_count;
+		else if (e.resolution_kind == "unresolved") {
+			++stats.unresolved_count;
+			// Classify using raw_target (the original import syntax)
+			// not dst_module (which may have been folded/normalized).
+			const std::string &classify_src = e.raw_target.empty() ?
+								  e.dst_module :
+								  e.raw_target;
+			std::string reason =
+				classifyUnresolvedReason(classify_src);
+			if (reason == "bare_header")
+				++stats.bare_header_count;
+			else if (reason == "absolute_path")
+				++stats.absolute_path_count;
+			else
+				++stats.cross_dir_relative_count;
+		}
+	}
+	if (stats.total > 0) {
+		stats.unresolved_ratio =
+			static_cast<double>(stats.unresolved_count) /
+			stats.total;
+		stats.external_ratio =
+			static_cast<double>(stats.external_count) / stats.total;
+		stats.internal_ratio =
+			static_cast<double>(stats.internal_count) / stats.total;
+	}
+	return stats;
+}
+
+/// Emit a dependency_anomaly candidate for one unresolved edge.
+static void emitAnomalyCandidate(const EdgeRow &e, DefectResult &result)
+{
+	// Skip standard library — it may appear as unresolved when the
+	// indexer lacks language-specific stdlib knowledge.
+	if (isStandardLibrary(e.dst_module))
+		return;
+
+	// Classify using raw_target (the original import syntax) not
+	// dst_module (which may have been folded/normalized by
+	// resolveRelativeTarget + foldPath in module_graph.cpp).
+	const std::string &classify_src = e.raw_target.empty() ? e.dst_module :
+								 e.raw_target;
+	std::string reason = classifyUnresolvedReason(classify_src);
+
+	DefectCandidate d;
+	d.category = "dependency_anomaly";
+	d.target = e.dst_module;
+	d.src_module = e.src_module;
+	d.file_path = e.source_file;
+	d.row = e.source_row;
+	d.confidence = 0.4;
+	d.reason = reason;
+	d.description = "Unresolved import: module '" + e.src_module +
+			"' imports '" + e.dst_module +
+			"' which cannot be resolved to any known module "
+			"or external package [reason: " +
+			reason + "]";
+	d.evidence_basis =
+		"arch_edge.resolution_kind='unresolved'; module_pair=" +
+		e.src_module + " -> " + e.dst_module;
+	result.candidates.push_back(std::move(d));
+}
+
+/// Detect dependency declaration anomalies (§12.4 M3-2).
+///
+/// An import is anomalous if its resolution_kind is 'unresolved' —
+/// meaning the target path contains a separator (so it looks like a
+/// file path) but does not match any known project module. Edges
+/// marked 'external' (third-party packages, standard library) are
+/// not anomalies.
+///
+/// For each unresolved edge we:
+/// - classify the reason (bare_header / absolute_path /
+///   cross_dir_relative);
+/// - emit a candidate with source_file + source_row + module pair;
+/// - aggregate counts and ratios into DependencyStats.
+///
+/// Foldable relative paths ("./x", "../x") are already collapsed by
+/// resolveRelativeTarget + foldPath in module_graph.cpp before the
+/// edge is written, so they should never appear as unresolved here.
 void detectDependencyAnomalies(store::GraphStore &store, uint64_t project_id,
 			       DefectResult &result)
 {
@@ -95,48 +259,16 @@ void detectDependencyAnomalies(store::GraphStore &store, uint64_t project_id,
 	if (!db)
 		return;
 
-	// Query unresolved edges — these are the true anomalies.
-	const char *sql =
-		"SELECT src_module, dst_module, source_file, source_row "
-		"FROM arch_edge WHERE project_id=? AND "
-		"resolution_kind='unresolved'";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+	std::vector<EdgeRow> edges;
+	if (!loadAllEdges(db, project_id, edges))
 		return;
 
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	result.dep_stats = buildDepStats(edges);
 
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const unsigned char *src = sqlite3_column_text(stmt, 0);
-		const unsigned char *dst = sqlite3_column_text(stmt, 1);
-		const unsigned char *sfile = sqlite3_column_text(stmt, 2);
-		int srow = sqlite3_column_int(stmt, 3);
-
-		std::string dst_path =
-			dst ? reinterpret_cast<const char *>(dst) : "";
-		std::string src_mod =
-			src ? reinterpret_cast<const char *>(src) : "";
-
-		// Skip standard library.
-		if (isStandardLibrary(dst_path))
-			continue;
-
-		DefectCandidate d;
-		d.category = "dependency_anomaly";
-		d.target = dst_path;
-		d.file_path = sfile ? reinterpret_cast<const char *>(sfile) :
-				      "";
-		d.row = srow;
-		d.confidence = 0.4;
-		d.description =
-			"Unresolved import: module '" + src_mod +
-			"' imports '" + dst_path +
-			"' which cannot be resolved to any known module "
-			"or external package";
-		d.evidence_basis = "arch_edge.resolution_kind='unresolved'";
-		result.candidates.push_back(std::move(d));
+	for (const auto &e : edges) {
+		if (e.resolution_kind == "unresolved")
+			emitAnomalyCandidate(e, result);
 	}
-	sqlite3_finalize(stmt);
 }
 
 /// One function's metrics for shell/duplicate detection.

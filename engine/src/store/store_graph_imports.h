@@ -19,6 +19,8 @@ struct PathRec {
 	std::string path;
 	std::string alias;
 	std::string file;
+	int start_row =
+		0; ///< Source line of the import statement (from semantic_records.start_row)
 };
 
 /// Flush one batch of import rows.

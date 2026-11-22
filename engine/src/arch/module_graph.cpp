@@ -730,7 +730,7 @@ bool writeStructuralEdgesFromImports(
 			std::string(sqlite3_errmsg(db));
 		return false;
 	}
-	const char *sql = "SELECT target_path, file_path, source_scope_id "
+	const char *sql = "SELECT target_path, file_path, source_row "
 			  "FROM import WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -743,8 +743,8 @@ bool writeStructuralEdgesFromImports(
 	const char *insert_sql = "INSERT OR IGNORE INTO arch_edge "
 				 "(project_id, src_module, dst_module, "
 				 "edge_kind, resolution_kind, confidence, "
-				 "source_file, source_row) "
-				 "VALUES (?,?,?,?,?,?,?,?)";
+				 "source_file, source_row, raw_target) "
+				 "VALUES (?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *insert_stmt = nullptr;
 	if (sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -757,6 +757,7 @@ bool writeStructuralEdgesFromImports(
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const unsigned char *target = sqlite3_column_text(stmt, 0);
 		const unsigned char *sfile = sqlite3_column_text(stmt, 1);
+		int import_row = sqlite3_column_int(stmt, 2);
 		if (!target || !sfile)
 			continue;
 		std::string target_path =
@@ -789,7 +790,9 @@ bool writeStructuralEdgesFromImports(
 		sqlite3_bind_double(insert_stmt, 6, confidence);
 		sqlite3_bind_text(insert_stmt, 7, source_file.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_bind_int(insert_stmt, 8, 0);
+		sqlite3_bind_int(insert_stmt, 8, import_row);
+		sqlite3_bind_text(insert_stmt, 9, target_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
 		sqlite3_step(insert_stmt);
 		sqlite3_reset(insert_stmt);
 	}

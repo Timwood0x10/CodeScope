@@ -44,6 +44,25 @@ constexpr int kKindTypeAssign = 18;
 namespace store
 {
 
+namespace
+{
+
+/// Fill one import row from its target path and its recorded line.
+///
+/// `last_sep` handles both `a::b` and `a/b`; tree-sitter rows are 0-based and
+/// the stored row is 1-based (0 = N/A in arch_edge.source_row), so the caller
+/// passes the raw column and this adds one.
+void fillImportRow(PathRec &pr, const std::string &p, int sr_row)
+{
+	size_t last_sep = p.rfind('/');
+	if (last_sep == std::string::npos)
+		last_sep = p.rfind("::");
+	pr.alias = last_sep == std::string::npos ? p : p.substr(last_sep + 1);
+	pr.start_row = sr_row + 1;
+}
+
+} // namespace
+
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			    const std::unordered_set<std::string> *changed_files,
 			    bool include_test_files)
@@ -548,7 +567,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		const std::string fetch_sql =
 			std::string(
-				"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
+				"SELECT sr.name, sr.project_id, sr.file_path, sr.start_row FROM semantic_records sr "
 				"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != ''"
 				" AND sr.file_path IN (SELECT file_path FROM _rf)") +
 			test_file_filter;
@@ -617,14 +636,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				for (auto &p : paths) {
 					PathRec pr;
 					pr.path = p;
-					size_t last_sep = p.rfind('/');
-					if (last_sep == std::string::npos)
-						last_sep = p.rfind("::");
-					pr.alias =
-						(last_sep !=
-						 std::string::npos) ?
-							p.substr(last_sep + 1) :
-							p;
+					fillImportRow(pr, p,
+						      sqlite3_column_int(
+							      fetch_st, 3));
 					const char *fp_c =
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(

@@ -471,6 +471,76 @@ CREATE TABLE IF NOT EXISTS profile_snapshot (
 );
 )sql",
 	},
+	{
+		17,
+		"arch_edge_raw_target",
+		// M3 §12.4: arch_edge.dst_module stores the *resolved*
+		// (normalized + folded) target, which loses the original
+		// import syntax. classifyUnresolvedReason needs the raw
+		// target_path to distinguish "../include/x.h" (folded to
+		// an absolute-looking path) from a true absolute path.
+		// raw_target preserves the import statement's target as
+		// written by the developer.
+		//
+		// No backfill: arch_edge.dst_module is the folded/normalized
+		// path, not the original import syntax. Backfilling from
+		// dst_module would lose "../" prefixes; backfilling from
+		// import.target_path via file_path JOIN is ambiguous when
+		// a file has multiple imports. Migration 18 deletes all
+		// arch_edge rows to force a clean rebuild on the next
+		// buildLayer call, which populates raw_target correctly.
+		R"sql(
+ALTER TABLE arch_edge ADD COLUMN raw_target TEXT NOT NULL DEFAULT '';
+)sql",
+	},
+	{
+		18,
+		"import_source_row",
+		// M3 §12.4: preserve the source line number of each import
+		// statement so arch_edge.source_row can point to the actual
+		// #include / use / import line, not a fixed 0.
+		//
+		// Backfill import.source_row from semantic_records (kind=11).
+		//
+		// sr.name holds the whole statement, so the target has to match as a
+		// complete token, not as a substring: a file whose line 1 says
+		// '#include "vendor/dir/a_b.h"' and line 42 says
+		// '#include "dir/a_b.h"' must give row 42, while a bare
+		// instr(name, target) matched line 1 and recorded the wrong row.
+		// instr() is still used (LIKE would treat _ and % as wildcards and
+		// match "axb.h" for "a_b.h"), but only against a delimited form:
+		// quoted, angle-bracketed, or space/semicolon terminated.
+		//
+		// sr.start_row is 0-based (tree-sitter), so +1 converts to 1-based
+		// for the arch_edge.source_row convention (0 = N/A). ORDER BY
+		// start_row makes the choice deterministic when a statement matches
+		// more than one row.
+		//
+		// After backfilling, DELETE all arch_edge rows: the old edges carry
+		// source_row=0 and empty raw_target. The next buildLayer call rebuilds
+		// them, and the drift/gen_defects views rebuild the layer themselves
+		// when they find it empty (engine_arch::layerMissing), so a reader
+		// never reports the deleted rows as "no dependencies".
+		R"sql(
+ALTER TABLE import ADD COLUMN source_row INTEGER NOT NULL DEFAULT 0;
+UPDATE import SET source_row = COALESCE(
+  (SELECT (sr.start_row + 1) FROM semantic_records sr
+   WHERE sr.project_id = import.project_id
+     AND sr.kind = 11
+     AND sr.file_path = import.file_path
+     AND (
+       instr(sr.name, '"' || import.target_path || '"') > 0
+       OR instr(sr.name, '<' || import.target_path || '>') > 0
+       OR instr(sr.name, ' ' || import.target_path || ';') > 0
+       OR instr(sr.name, ' ' || import.target_path || ' ') > 0
+     )
+   ORDER BY sr.start_row
+   LIMIT 1),
+  0
+) WHERE source_row = 0;
+DELETE FROM arch_edge;
+)sql",
+	},
 };
 
 } // namespace
