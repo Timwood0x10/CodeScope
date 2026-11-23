@@ -1,12 +1,12 @@
 //! Cross-platform, file-backed shared memory.
 //!
-//! Both schedulers need a `#[repr(C)]` state block that the scheduler process
-//! and its worker subprocesses all observe: the dynamic scheduler's
-//! [`crate::scheduler::shm::SchedState`] and the chunked scheduler's
-//! [`crate::scheduler::chunk_queue::ChunkQueueState`]. Both used to open-code
-//! the same POSIX sequence (`open` + `ftruncate` + `mmap(MAP_SHARED)`) and so
-//! both failed to compile on Windows, where the `libc` crate exports no mapping
-//! API at all. This module owns that sequence once, behind two backends:
+//! The chunked scheduler needs a `#[repr(C)]` state block that the
+//! scheduler process and its worker subprocesses all observe:
+//! [`crate::scheduler::chunk_queue::ChunkQueueState`]. It used to
+//! open-code the same POSIX sequence (`open` + `ftruncate` +
+//! `mmap(MAP_SHARED)`) and so failed to compile on Windows, where the
+//! `libc` crate exports no mapping API at all. This module owns that
+//! sequence once, behind two backends:
 //!
 //! * **POSIX** — `open`/`ftruncate`/`mmap(MAP_SHARED)`, torn down with
 //!   `munmap`/`close`/`unlink`.
@@ -27,7 +27,7 @@
 //! on the layout (`#[repr(C)]` fields, atomics for anything mutated after
 //! `create`).
 
-/// Method tag appended to error strings, e.g. `SchedShm::create`, so messages
+/// Method tag appended to error strings, e.g. `ChunkQueue::create`, so messages
 /// keep the `[module=scheduler, method=…]` shape callers' tests and log greps
 /// expect. Kept as a parameter rather than a constant because the same mapping
 /// code backs two differently named queues.

@@ -38,18 +38,14 @@
 //! `discover::*` for module/file listing and the worker's C++
 //! `FilterPolicy` for the authoritative skip rules.
 
-// dyn_config is wired into the dispatch path via DynSchedConfig.
-// See index_parallel() -> DynSchedConfig::should_enable().
 mod chunk_plan;
 pub mod chunk_queue;
 mod chunked;
-mod dyn_config;
 mod mapped_file;
 mod merge;
 mod merge_index;
 mod merge_specs;
 mod quarantine;
-mod shm;
 mod worker;
 
 use serde_json::{Value, json};
@@ -164,6 +160,54 @@ pub(super) fn worker_succeeded(r: &ModuleResult) -> bool {
 /// [`run_complete`], which decides whether the merge produced a main.db.
 pub(super) fn run_produced_index(total_nodes: u64, total_files_indexed: u64) -> bool {
     total_nodes > 0 || total_files_indexed == 0
+}
+
+/// Parse a tri-state environment variable value.
+///
+/// Returns:
+/// - Some(true)  for "1", "true", "on" (case-insensitive)
+/// - Some(false) for "0", "false", "off" (case-insensitive)
+/// - None        for any other value (unrecognized)
+///
+/// An unrecognized value is NOT the same as "off": the old
+/// implementation treated unknown values as false, which changed
+/// the fallback behaviour when the preferred variable was set to
+/// a typo like "yes" — the alias was never consulted and dynamic
+/// scheduling was silently disabled.  With tri-state, an
+/// unrecognized preferred value falls through to the alias.
+fn parse_tri_state(val: &str) -> Option<bool> {
+    match val.to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => Some(true),
+        "0" | "false" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Check whether the dynamic (chunked work-stealing) scheduler should be
+/// used. Opt-in via `CODESCOPE_CPU_DYNAMIC` or `CODESCOPE_DYNAMIC_SCHED`
+/// env var set to `1`/`true`/`on`. Returns `false` for all other values
+/// or when unset — the static proportional allocator is the default.
+///
+/// `CODESCOPE_CPU_DYNAMIC` is the preferred variable and takes precedence:
+/// when it is explicitly set to a recognised value (on or off), the
+/// legacy alias `CODESCOPE_DYNAMIC_SCHED` is never consulted.  When the
+/// preferred variable is set to an UNRECOGNISED value (e.g. "yes",
+/// "oops"), we fall through to the alias — matching the old behaviour
+/// where unknown values did not disable dynamic scheduling by
+/// themselves.  Only `0`/`false`/`off` explicitly disables it.
+fn cpu_dynamic_enabled() -> bool {
+    if let Ok(val) = std::env::var("CODESCOPE_CPU_DYNAMIC") {
+        match parse_tri_state(&val) {
+            Some(true) => return true,
+            Some(false) => return false,
+            None => { /* fall through to alias */ }
+        }
+    }
+    std::env::var("CODESCOPE_DYNAMIC_SCHED")
+        .ok()
+        .as_deref()
+        .and_then(parse_tri_state)
+        .unwrap_or(false)
 }
 
 /// Entry point: discover modules, dispatch workers, quarantine failures,
@@ -298,14 +342,12 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
 
     // ── Dispatch: STATIC by default ──────────────────────────
     // The project's scheduling principle is "static analysis by default;
-    // CPU-dynamic scheduling only when an explicit flag is set". We
-    // therefore NEVER auto-enable dynamic mode for large projects — the
-    // flag (`CODESCOPE_CPU_DYNAMIC` / `CODESCOPE_DYNAMIC_SCHED` = 1/true/
-    // on) is the ONLY trigger. Without it we stay on the static
-    // proportional allocator below (no shm overhead, no work-stealing).
-    let dyn_config = dyn_config::DynSchedConfig::from_env();
-    let cpu_dynamic = dyn_config.force_on == Some(true);
-    if cpu_dynamic {
+    // CPU-dynamic (chunked work-stealing) scheduling only when an explicit
+    // flag is set". The flag (`CODESCOPE_CPU_DYNAMIC` /
+    // `CODESCOPE_DYNAMIC_SCHED` = 1/true/on) is the ONLY trigger. Without
+    // it we stay on the static proportional allocator below (no shm
+    // overhead, no work-stealing).
+    if cpu_dynamic_enabled() {
         eprintln!(
             "scheduler: CPU-dynamic (chunked work-stealing) enabled via flag [module=scheduler, method=index_parallel]"
         );
@@ -797,6 +839,64 @@ mod tests {
             run_produced_index(0, 0),
             "an empty run is judged by run_complete, not here"
         );
+    }
+
+    #[test]
+    fn test_cpu_dynamic_enabled_preferred_var_overrides_alias() {
+        // P2 regression: CODESCOPE_CPU_DYNAMIC=0 must take precedence over
+        // CODESCOPE_DYNAMIC_SCHED=1 — the old OR logic enabled dynamic
+        // scheduling even when the preferred variable explicitly disabled it.
+        //
+        // This test calls the PRODUCTION cpu_dynamic_enabled() so it
+        // validates the real env-var parsing, not a copied helper.
+
+        // Helper to run with controlled env vars.
+        let run = |cpu_dyn: Option<&str>, alias: Option<&str>| -> bool {
+            // Clear both vars first so no interference from the test
+            // process's own environment.
+            unsafe {
+                std::env::remove_var("CODESCOPE_CPU_DYNAMIC");
+                std::env::remove_var("CODESCOPE_DYNAMIC_SCHED");
+                if let Some(v) = cpu_dyn {
+                    std::env::set_var("CODESCOPE_CPU_DYNAMIC", v);
+                }
+                if let Some(v) = alias {
+                    std::env::set_var("CODESCOPE_DYNAMIC_SCHED", v);
+                }
+            }
+            cpu_dynamic_enabled()
+        };
+
+        // Preferred=off, alias=on → false (the bug was: true)
+        assert!(!run(Some("0"), Some("1")));
+        assert!(!run(Some("false"), Some("on")));
+        assert!(!run(Some("off"), Some("true")));
+
+        // Preferred=on, alias=off → true (preferred wins)
+        assert!(run(Some("1"), Some("0")));
+        assert!(run(Some("on"), Some("off")));
+
+        // Preferred unset, alias=on → true (fallback to alias)
+        assert!(run(None, Some("1")));
+
+        // Both unset → false (static is default)
+        assert!(!run(None, None));
+
+        // Preferred set to a non-truthy value, alias unset → false
+        assert!(!run(Some("no"), None));
+
+        // Preferred=unrecognized, alias=on → true (falls through to alias)
+        assert!(run(Some("oops"), Some("1")));
+        assert!(run(Some("yes"), Some("on")));
+
+        // Preferred=unrecognized, alias unset → false
+        assert!(!run(Some("oops"), None));
+
+        // Clean up so we don't leak env vars into other tests.
+        unsafe {
+            std::env::remove_var("CODESCOPE_CPU_DYNAMIC");
+            std::env::remove_var("CODESCOPE_DYNAMIC_SCHED");
+        }
     }
 
     #[test]

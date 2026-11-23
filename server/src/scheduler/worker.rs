@@ -513,7 +513,6 @@ pub(super) fn run_chunk_worker(
         &project_id_str,
     ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
-    cmd.env("CODESCOPE_SCHED_SHM", shm_path);
     cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
     cmd.env("CODESCOPE_DB_PATH", worker_db);
     cmd.env("CODESCOPE_FILES_JSON", files_json_path);
@@ -544,7 +543,6 @@ pub(super) fn run_chunk_worker(
             &project_id_str,
         ]);
         taskset_cmd.env("GRAMMARS_DIR", grammars_dir);
-        taskset_cmd.env("CODESCOPE_SCHED_SHM", shm_path);
         taskset_cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
         taskset_cmd.env("CODESCOPE_DB_PATH", worker_db);
         taskset_cmd.env("CODESCOPE_FILES_JSON", files_json_path);

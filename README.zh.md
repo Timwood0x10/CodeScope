@@ -587,7 +587,6 @@ cd CodeScope
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880`（5 MB） | 允许索引的最大源文件大小（字节）。超限文件被静默跳过。 |
 | `CODESCOPE_FAIL_RETRY_MAX` | `1` | 自动索引路径中文件被彻底跳过前允许的解析失败次数（最小 1），见 `parse_failures` / `codescope reset-failures`。仅因**缺少语法**而失败的文件（`language_missing`，例如 `.swift`）不计入，每次运行都会重试。`force_index_files` **不**套用该跳过：被强制索引的文件总会被重新尝试。 |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` 参数值 |
-| `CODESCOPE_MEM_LIMIT_MB` | `4096` | 动态调度器内存上限（MB） |
 | `CODESCOPE_DYNAMIC_SCHED` | （未设置 = 静态） | 可选开启的动态 CPU 调度。规范名是 `CODESCOPE_CPU_DYNAMIC`，本变量是历史别名，两者均可。`1`/`true`/`on` 启用共享 chunk 队列调度器，`0`/`false`/`off` 关闭，未设置则保持**静态**比例分配。 |
 | `CODESCOPE_LSP` | （未设置） | 类型增强的 LSP 服务端命令 |
 

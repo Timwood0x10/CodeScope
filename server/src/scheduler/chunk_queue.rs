@@ -20,9 +20,9 @@
 //! to `CLAIMED` — chunk count (~100-250) makes the scan cost negligible
 //! (§4.2).
 //!
-//! This module is infrastructure for the chunk-level scheduler (P2-P4
-//! of the redesign). The current module-level scheduler still uses
-//! `shm.rs`; both can coexist during the migration.
+//! This module is the sole parallel scheduling entry point when the
+//! chunked path is selected (P5 cleanup: the old `shm.rs` core-pool
+//! has been removed).
 //!
 //! The queue lives in a shared file mapped by
 //! [`super::mapped_file::MappedFile`], so it works on POSIX and Windows
@@ -315,7 +315,7 @@ impl ChunkQueue {
 
 unsafe impl Send for ChunkQueue {}
 
-// SAFETY: ChunkQueue is Sync for the same reasons as SchedShm:
+// SAFETY: ChunkQueue is Sync because:
 // - All mutable operations on the mmap'd ChunkQueueState go through
 //   `AtomicU32`/`AtomicU64` (`status`, `claimer_id`, `started_at_ms`,
 //   `finished_at_ms`, `failed_files`). Both atomics are `Sync`, so
