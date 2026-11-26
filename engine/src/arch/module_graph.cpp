@@ -628,8 +628,14 @@ bool writeArchModules(
 		auto it = entity_counts.find(path);
 		sqlite3_bind_int(stmt, 6,
 				 it != entity_counts.end() ? it->second : 0);
-		sqlite3_step(stmt);
+		int rc = sqlite3_step(stmt);
 		sqlite3_reset(stmt);
+		if (rc != SQLITE_DONE) {
+			error = "arch_module insert step failed: " +
+				std::string(sqlite3_errmsg(db));
+			sqlite3_finalize(stmt);
+			return false;
+		}
 	}
 	sqlite3_finalize(stmt);
 	return true;
@@ -677,8 +683,13 @@ bool writeModuleMembers(sqlite3 *db, uint64_t project_id,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 7, mod_path.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_step(stmt);
+		int rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
+		if (rc != SQLITE_DONE) {
+			error = "arch_module_member insert failed: " +
+				std::string(sqlite3_errmsg(db));
+			return false;
+		}
 	}
 	return true;
 }
@@ -793,8 +804,15 @@ bool writeStructuralEdgesFromImports(
 		sqlite3_bind_int(insert_stmt, 8, import_row);
 		sqlite3_bind_text(insert_stmt, 9, target_path.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_step(insert_stmt);
+		int ins_rc = sqlite3_step(insert_stmt);
 		sqlite3_reset(insert_stmt);
+		if (ins_rc != SQLITE_DONE) {
+			error = "arch_edge insert failed: " +
+				std::string(sqlite3_errmsg(db));
+			sqlite3_finalize(insert_stmt);
+			sqlite3_finalize(stmt);
+			return false;
+		}
 	}
 	sqlite3_finalize(insert_stmt);
 	sqlite3_finalize(stmt);
@@ -813,18 +831,45 @@ bool buildStructuralEdges(store::GraphStore &store, uint64_t project_id,
 		return false;
 	}
 
+	// Wrap all writes (DELETE + INSERT) in a SAVEPOINT so a mid-way
+	// failure rolls back to the pre-build state instead of leaving the
+	// module/edge tables empty (DELETE ran, INSERT failed).
+	//
+	// A SAVEPOINT works whether or not the caller already holds a
+	// transaction: when the caller has its own BEGIN, a ROLLBACK TO
+	// savepoint undoes only the local writes without touching the outer
+	// transaction; when there is no outer transaction, the SAVEPOINT is
+	// the transaction boundary.  This replaces the old own_txn pattern
+	// whose rollback was a no-op inside an outer transaction.
+	const char *sp_name = "cs_build_edges";
+	if (sqlite3_exec(db, "SAVEPOINT cs_build_edges", nullptr, nullptr,
+			 nullptr) != SQLITE_OK) {
+		error = std::string("SAVEPOINT failed: ") + sqlite3_errmsg(db);
+		return false;
+	}
+	auto rollback = [&]() {
+		std::string rl = std::string("ROLLBACK TO ") + sp_name;
+		sqlite3_exec(db, rl.c_str(), nullptr, nullptr, nullptr);
+		sqlite3_exec(db, "RELEASE cs_build_edges", nullptr, nullptr,
+			     nullptr);
+	};
+
 	// Step 1: Build module tree from entity file paths.
 	std::unordered_map<std::string, int> module_file_counts;
 	std::unordered_map<std::string, int> module_entity_counts;
 	std::unordered_map<std::string, std::string> module_languages;
 	if (!collectModuleTree(db, project_id, module_file_counts,
-			       module_entity_counts, module_languages, error))
+			       module_entity_counts, module_languages, error)) {
+		rollback();
 		return false;
+	}
 
 	// Step 2: Write arch_module rows.
 	if (!writeArchModules(db, project_id, module_file_counts,
-			      module_entity_counts, module_languages, error))
+			      module_entity_counts, module_languages, error)) {
+		rollback();
 		return false;
+	}
 
 	// Collect all module paths for internal resolution.
 	std::unordered_set<std::string> known_modules;
@@ -832,13 +877,25 @@ bool buildStructuralEdges(store::GraphStore &store, uint64_t project_id,
 		known_modules.insert(kv.first);
 
 	// Step 3: Write arch_module_member.
-	if (!writeModuleMembers(db, project_id, module_file_counts, error))
+	if (!writeModuleMembers(db, project_id, module_file_counts, error)) {
+		rollback();
 		return false;
+	}
 
 	// Step 4: Build structural edges from the import table.
 	if (!writeStructuralEdgesFromImports(db, project_id, known_modules,
-					     error))
+					     error)) {
+		rollback();
 		return false;
+	}
+
+	// Release the SAVEPOINT — commits the local writes.
+	if (sqlite3_exec(db, "RELEASE cs_build_edges", nullptr, nullptr,
+			 nullptr) != SQLITE_OK) {
+		error = std::string("RELEASE failed: ") + sqlite3_errmsg(db);
+		rollback();
+		return false;
+	}
 
 	return true;
 }

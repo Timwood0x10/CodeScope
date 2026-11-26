@@ -24,13 +24,11 @@ namespace engine_arch
 /// A missing `.codescope/profile.yaml` is not a failure — nothing is declared,
 /// and the constraint tables legitimately stay empty.
 ///
-/// Failure is reported on stderr and never propagated: the graph and the model
-/// layer are still usable, and an empty architecture table is exactly the
-/// state this function exists to end, so it must be visible rather than fatal.
-///
 /// @param store Open store; the caller guarantees it is not in a transaction.
 /// @param project_id Project whose architecture rows are rebuilt.
-void buildLayer(store::GraphStore &store, uint64_t project_id);
+/// @return true on success; false on failure (the caller should propagate
+///         the error so `engine_enhance_project` reports ok:false).
+bool buildLayer(store::GraphStore &store, uint64_t project_id);
 
 /// True when the project has callables but no structural edge.
 ///

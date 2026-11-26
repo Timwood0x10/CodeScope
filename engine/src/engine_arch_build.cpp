@@ -46,7 +46,7 @@ bool layerMissing(store::GraphStore &store, uint64_t project_id)
 	return edges == 0;
 }
 
-void buildLayer(store::GraphStore &store, uint64_t project_id)
+bool buildLayer(store::GraphStore &store, uint64_t project_id)
 {
 	// The M2 builders existed and were tested, but nothing called them: on
 	// every real project arch_module / arch_edge / arch_entry_point /
@@ -57,7 +57,7 @@ void buildLayer(store::GraphStore &store, uint64_t project_id)
 	if (!db) {
 		fprintf(stderr, "enhance: arch layer skipped, store closed "
 				"[module=engine_arch, method=buildLayer]\n");
-		return;
+		return false;
 	}
 	// The caller may already hold a transaction: enhance wraps several of
 	// its steps, and starting a second one fails with "cannot start a
@@ -68,7 +68,7 @@ void buildLayer(store::GraphStore &store, uint64_t project_id)
 		fprintf(stderr,
 			"enhance: arch layer skipped, transaction failed "
 			"[module=engine_arch, method=buildLayer]\n");
-		return;
+		return false;
 	}
 
 	bool ok = arch::buildStructuralEdges(store, project_id, error);
@@ -85,24 +85,37 @@ void buildLayer(store::GraphStore &store, uint64_t project_id)
 		const auto loaded = constraint::loadConstraints(
 			store, project_id,
 			store.getProjectRootPath(project_id));
-		// no_file means "nothing declared", which is a valid state.
-		if (!loaded.no_file && !loaded.error.empty()) {
+		// A purge failure must propagate even when no_file=true:
+		// loadConstraints sets no_file when the profile is missing
+		// and attempts to purge old declarations. If that purge
+		// fails, stale constraints remain active — a real error,
+		// not a valid "nothing declared" state.
+		if (!loaded.error.empty()) {
 			ok = false;
 			error = loaded.error;
 		}
 	}
 
 	if (ok) {
-		if (own_txn)
-			store.commitTransaction();
-		return;
+		if (own_txn && !store.commitTransaction()) {
+			// A commit failure leaves the transaction open or
+			// rolled back by SQLite; either way the data is not
+			// published. Report failure so the caller does not
+			// treat uncommitted writes as a successful build.
+			error = "commitTransaction failed: " + store.error();
+			ok = false;
+		}
 	}
-	if (own_txn)
-		store.rollbackTransaction();
-	fprintf(stderr,
-		"enhance: arch layer failed: %s "
-		"[module=engine_arch, method=buildLayer]\n",
-		error.c_str());
+	if (!ok) {
+		if (own_txn)
+			store.rollbackTransaction();
+		fprintf(stderr,
+			"enhance: arch layer failed: %s "
+			"[module=engine_arch, method=buildLayer]\n",
+			error.c_str());
+		return false;
+	}
+	return true;
 }
 
 } // namespace engine_arch

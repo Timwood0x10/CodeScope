@@ -193,6 +193,40 @@ static char *findSymbolImpl(EngineContext *ctx, uint64_t project_id,
 //
 // No re-parse, no re-translate, no regex extraction.
 
+// Step 0.5: Extract semantic facts (idempotent). Runs unconditionally
+// because the worker-mode index_project path sets normal_ready=1 without
+// ever triggering Step 1.5. Returns fact count; writes elapsed ms to *out_ms.
+static int64_t runSemanticFactExtraction(EngineContext *ctx,
+					 uint64_t project_id, int64_t *out_ms)
+{
+	auto t = std::chrono::steady_clock::now();
+	ctx->store->beginTransaction();
+	model::SemanticFactExtractor extractor(ctx->store.get());
+	int64_t facts = extractor.extractAll(project_id);
+	ctx->store->commitTransaction();
+	*out_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			  std::chrono::steady_clock::now() - t)
+			  .count();
+	fprintf(stderr, "enhance: semantic_facts %lldms\n", (long long)*out_ms);
+	return facts;
+}
+
+// Step 0.6: Ingest the project root README as a knowledge document so
+// every index path converges on the same documentation state.
+static void ingestRootReadme(EngineContext *ctx, uint64_t project_id)
+{
+	const int readme =
+		engine_index_discover::ingestProjectRootReadme(ctx, project_id);
+	if (readme > 0)
+		fprintf(stderr,
+			"enhance: project README ingested as a knowledge document\n");
+	else if (readme < 0)
+		fprintf(stderr,
+			"enhance: project README NOT ingested (unreadable project row, "
+			"unlistable root or store failure) "
+			"[module=engine_queries, method=engine_enhance_project]\n");
+}
+
 static char *enhanceProjectImpl(EngineContext *ctx, uint64_t project_id)
 {
 	if (!ctx || !ctx->store || !ctx->parser)
@@ -223,52 +257,9 @@ static char *enhanceProjectImpl(EngineContext *ctx, uint64_t project_id)
 	const char *failed_step = nullptr;
 	std::string failure_detail;
 
-	// Step 0.5: Extract semantic facts
-	//
-	// Runs unconditionally (even when the project is already finalized)
-	// because the worker-mode index_project path sets normal_ready=1
-	// without ever triggering Step 1.5. The extractor is idempotent —
-	// it clears existing facts for the project before reinserting — so
-	// re-running on an already-enhanced project is safe and cheap.
-	// Without this, build_evidence would return only the test_quality
-	// rule (Count combine mode that does not depend on semantic_facts).
-	{
-		auto t = Clock::now();
-		ctx->store->beginTransaction();
-		model::SemanticFactExtractor extractor(ctx->store.get());
-		semantic_facts = extractor.extractAll(project_id);
-		ctx->store->commitTransaction();
-		t_semantic =
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				Clock::now() - t)
-				.count();
-		fprintf(stderr, "enhance: semantic_facts %lldms\n",
-			(long long)t_semantic);
-	}
-
-	// Step 0.6: knowledge documents
-	//
-	// Every index path must end with the same documentation state, but README
-	// ingestion used to happen only in the discovery walk and only for the
-	// directories it scanned. The parallel scheduler indexes module
-	// directories, so a project whose root holds no source files never had its
-	// root README ingested (six of the ten real projects checked answered
-	// detect_documentation_drift with nothing at all while a README was
-	// present), and the file-list path (force-index) ingested none. Enhancing
-	// is last on every path, so the root README is ingested here.
-	{
-		const int readme =
-			engine_index_discover::ingestProjectRootReadme(
-				ctx, project_id);
-		if (readme > 0)
-			fprintf(stderr,
-				"enhance: project README ingested as a knowledge document\n");
-		else if (readme < 0)
-			fprintf(stderr,
-				"enhance: project README NOT ingested (unreadable project row, "
-				"unlistable root or store failure) "
-				"[module=engine_queries, method=engine_enhance_project]\n");
-	}
+	semantic_facts =
+		runSemanticFactExtraction(ctx, project_id, &t_semantic);
+	ingestRootReadme(ctx, project_id);
 
 	// Step 1: buildGraph (skip if already finalized)
 	{
@@ -365,7 +356,17 @@ run_model_build:
 		auto t = Clock::now();
 		runModelIndexSync(*ctx->store, project_id, true);
 		buildKnowledgeGraphSync(*ctx->store, project_id);
-		engine_arch::buildLayer(*ctx->store, project_id);
+		if (!engine_arch::buildLayer(*ctx->store, project_id)) {
+			failed_step = "buildLayer";
+			failure_detail =
+				"arch layer build failed; constraint or "
+				"entry-point writes may be incomplete";
+			fprintf(stderr,
+				"enhance: buildLayer failed for project %llu "
+				"[module=engine_queries, "
+				"method=engine_enhance_project]\n",
+				(unsigned long long)project_id);
+		}
 		t_model = std::chrono::duration_cast<std::chrono::milliseconds>(
 				  Clock::now() - t)
 				  .count();

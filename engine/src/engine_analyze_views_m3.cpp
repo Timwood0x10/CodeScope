@@ -117,8 +117,24 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 	// A schema upgrade deletes arch_edge and lets the next build repopulate
 	// it. Answering before that reports "no dependencies" as a fact, so the
 	// layer is rebuilt here instead of returning an empty dependency_stats.
-	if (engine_arch::layerMissing(*ctx->store, project_id))
-		engine_arch::buildLayer(*ctx->store, project_id);
+	// A build failure must NOT be ignored: detectGenDefects would answer
+	// against an empty or partial graph and the caller would treat the
+	// zero-candidate result as a real measurement.
+	if (engine_arch::layerMissing(*ctx->store, project_id)) {
+		if (!engine_arch::buildLayer(*ctx->store, project_id)) {
+			util::JsonWriter w;
+			w.beginObject();
+			w.key("view").value("gen_defects");
+			w.key("project_id").value(project_id);
+			w.key("status").value("error");
+			w.key("error").value(
+				"arch layer build failed; gen_defects "
+				"cannot be computed against an incomplete "
+				"graph. Re-index and try again.");
+			w.endObject();
+			return dupString(w.str());
+		}
+	}
 	auto result = arch::detectGenDefects(*ctx->store, project_id);
 
 	util::JsonWriter w;
@@ -251,13 +267,75 @@ char *buildReverify(EngineContext *ctx, uint64_t project_id,
 
 // ── drift view (§18.2.2 D, §12.4 M3-4) ──────────────────────────
 
+/// Return an error JSON string if run_id is not the latest verification run
+/// for the project, or nullptr if it is the latest (or no runs exist).
+/// Drift detection recomputes against the current state, so applying it to
+/// a non-latest run would overwrite that run's historical records.
+char *rejectStaleRun(EngineContext *ctx, uint64_t project_id,
+		     const std::string &run_id)
+{
+	sqlite3 *db = ctx->store->handle();
+	sqlite3_stmt *stmt = nullptr;
+	const char *latest_sql =
+		"SELECT run_id FROM verification_run "
+		"WHERE project_id=? "
+		"ORDER BY started_at DESC, run_id DESC LIMIT 1";
+	if (sqlite3_prepare_v2(db, latest_sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return nullptr;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	if (sqlite3_step(stmt) != SQLITE_ROW) {
+		sqlite3_finalize(stmt);
+		return nullptr;
+	}
+	const char *latest =
+		reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+	std::string latest_id = latest ? latest : "";
+	sqlite3_finalize(stmt);
+	if (latest_id.empty() || latest_id == run_id)
+		return nullptr;
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("view").value("drift");
+	w.key("project_id").value(project_id);
+	w.key("run_id").value(run_id);
+	w.key("status").value("error");
+	w.key("error").value(
+		"drift detection refused for a non-latest run: the "
+		"engine recomputes drift against the current "
+		"constraint set and would overwrite this run's "
+		"historical records. Use drift_history to read "
+		"existing records for run " +
+		run_id +
+		", or run engine_run_rules to produce a "
+		"fresh run.");
+	w.endObject();
+	return dupString(w.str());
+}
+
 char *buildDrift(EngineContext *ctx, uint64_t project_id,
 		 const std::string &run_id)
 {
+	if (auto *err = rejectStaleRun(ctx, project_id, run_id))
+		return err;
+
 	// Same reason as gen_defects: drift reads arch_edge, and a layer left
 	// empty by a schema upgrade must be rebuilt before it is judged.
-	if (engine_arch::layerMissing(*ctx->store, project_id))
-		engine_arch::buildLayer(*ctx->store, project_id);
+	if (engine_arch::layerMissing(*ctx->store, project_id)) {
+		if (!engine_arch::buildLayer(*ctx->store, project_id)) {
+			util::JsonWriter w;
+			w.beginObject();
+			w.key("view").value("drift");
+			w.key("project_id").value(project_id);
+			w.key("run_id").value(run_id);
+			w.key("status").value("error");
+			w.key("error").value(
+				"arch layer build failed; drift detection "
+				"cannot be computed against an incomplete "
+				"graph. Re-index and try again.");
+			w.endObject();
+			return dupString(w.str());
+		}
+	}
 	auto result =
 		verify::detectAndPersistDrift(*ctx->store, project_id, run_id);
 
@@ -409,10 +487,12 @@ char *buildProfileHistory(EngineContext *ctx, uint64_t project_id, int limit)
 	w.key("view").value("profile_history");
 	w.key("project_id").value(project_id);
 
-	std::string sql = "SELECT run_id, status, profile, started_at, "
-			  "finished_at, worktree_digest, source_revision "
-			  "FROM verification_run WHERE project_id=? "
-			  "ORDER BY started_at DESC LIMIT ?";
+	std::string sql =
+		"SELECT run_id, status, profile, started_at, "
+		"finished_at, worktree_digest, source_revision, "
+		"rule_set_digest, constraint_digest, filter_policy_digest "
+		"FROM verification_run WHERE project_id=? "
+		"ORDER BY started_at DESC LIMIT ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -446,6 +526,9 @@ char *buildProfileHistory(EngineContext *ctx, uint64_t project_id, int limit)
 		w.key("finished_at").value(text(4));
 		w.key("worktree_digest").value(text(5));
 		w.key("source_revision").value(text(6));
+		w.key("rule_set_digest").value(text(7));
+		w.key("constraint_digest").value(text(8));
+		w.key("filter_policy_digest").value(text(9));
 
 		// Query per-dimension snapshots for this run.
 		w.key("dimensions").beginArray();
