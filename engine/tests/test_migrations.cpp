@@ -289,12 +289,12 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 18,
-		      "fresh database not at version 18");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 18,
-		      "schema_meta must hold baseline + 17 migrations");
+		check(scalar(store, "PRAGMA user_version") == 19,
+		      "fresh database not at version 19");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 19,
+		      "schema_meta must hold baseline + 18 migrations");
 		check(scalar(store, "SELECT MAX(version) FROM schema_meta") ==
-			      18,
+			      19,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
@@ -384,9 +384,9 @@ int main()
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 18,
+		check(scalar(store, "PRAGMA user_version") == 19,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 18,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 19,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -398,9 +398,9 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 18,
-		      "legacy database not migrated to v18");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 18,
+		check(scalar(store, "PRAGMA user_version") == 19,
+		      "legacy database not migrated to v19");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 19,
 		      "legacy schema_meta row count");
 
 		check(scalar(store,

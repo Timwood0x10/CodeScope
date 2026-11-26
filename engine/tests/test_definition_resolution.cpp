@@ -140,6 +140,7 @@ class Fixture {
 		     "ALTER TABLE semantic_records DROP COLUMN is_definition;"
 		     "ALTER TABLE arch_edge DROP COLUMN raw_target;"
 		     "ALTER TABLE import DROP COLUMN source_row;"
+		     "DROP TABLE IF EXISTS constraint_active;"
 		     "DELETE FROM schema_meta WHERE version>=12;"
 		     "PRAGMA user_version=11;");
 		engine_.reset();

@@ -541,6 +541,25 @@ UPDATE import SET source_row = COALESCE(
 DELETE FROM arch_edge;
 )sql",
 	},
+	{
+		19,
+		"constraint_active",
+		// M3 §18.5: activeConstraintDigest previously inferred the active
+		// digest from constraint_decl ORDER BY declared_at DESC LIMIT 1.
+		// This is unreliable: switching from a rules-bearing profile A to
+		// a layers-only profile B still selects A (B has no constraint_decl
+		// rows); removing the profile entirely leaves A active because old
+		// declarations persist. A dedicated table stores the authoritative
+		// active digest, updated by loadConstraints on every load (including
+		// the no-file case, which clears it).
+		R"sql(
+CREATE TABLE IF NOT EXISTS constraint_active (
+  project_id INTEGER PRIMARY KEY,
+  constraint_digest TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+)sql",
+	},
 };
 
 } // namespace

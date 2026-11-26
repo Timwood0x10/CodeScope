@@ -302,40 +302,47 @@ bool extractDeclarations(const util::JsonValue &root,
 	return true;
 }
 
-/// Delete old declarations for this digest (idempotent reload).
-bool deleteOldDeclarations(sqlite3 *db, uint64_t project_id,
-			   const std::string &digest, std::string &error)
+/// Delete declarations for a specific digest only.
+///
+/// A reload replaces only the current (active) digest's rows.
+/// Deleting every digest — including ones that historical runs may
+/// still reference — made querying by an old digest return empty
+/// after a reload, so drift detection for a historical run silently
+/// found zero violations.  Historical digests must stay queryable.
+bool deleteDeclarationsForDigest(sqlite3 *db, uint64_t project_id,
+				 const std::string &digest, std::string &error)
 {
-	std::string del_constraints =
-		"DELETE FROM constraint_decl WHERE project_id = " +
-		std::to_string(project_id) + " AND constraint_digest = ?";
-	std::string del_layers =
-		"DELETE FROM arch_layer_decl WHERE project_id = " +
-		std::to_string(project_id) + " AND constraint_digest = ?";
+	const char *del_constraints =
+		"DELETE FROM constraint_decl "
+		"WHERE project_id = ? AND constraint_digest = ?";
+	const char *del_layers =
+		"DELETE FROM arch_layer_decl "
+		"WHERE project_id = ? AND constraint_digest = ?";
 
-	auto exec = [&](const std::string &sql, const char *label) -> bool {
+	auto exec = [&](const char *sql, const char *label,
+			const std::string &d) -> bool {
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
-			error = std::string("prepare ") + label +
-				" failed: " + sqlite3_errmsg(db);
+			error = std::string(label) +
+				" prepare failed: " + sqlite3_errmsg(db);
 			return false;
 		}
-		sqlite3_bind_text(stmt, 1, digest.c_str(), -1,
-				  SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 2, d.c_str(), -1, SQLITE_TRANSIENT);
 		int rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE) {
 			error = std::string(label) +
-				" step failed: " + sqlite3_errmsg(db);
+				" failed: " + sqlite3_errmsg(db);
 			return false;
 		}
 		return true;
 	};
 
-	if (!exec(del_constraints, "del_constraints"))
+	if (!exec(del_constraints, "del_constraints", digest))
 		return false;
-	if (!exec(del_layers, "del_layers"))
+	if (!exec(del_layers, "del_layers", digest))
 		return false;
 	return true;
 }
@@ -418,7 +425,119 @@ bool insertLayers(sqlite3 *db, uint64_t project_id, const std::string &digest,
 	return true;
 }
 
+/// Update the authoritative active digest in constraint_active.
+///
+/// This MUST be called inside the same transaction that writes the
+/// declarations, so a failure in either step rolls back both.  A
+/// successful declaration write with a failed pointer update would
+/// leave the old digest active — the caller would report success while
+/// the engine still uses the previous constraint set.
+///
+/// @param digest  The new active digest (may be empty for deactivation).
+/// @return true on success; false sets *error.
+bool updateActiveDigest(sqlite3 *db, uint64_t project_id,
+			const std::string &digest,
+			const std::string &declared_at, std::string &error)
+{
+	const char *sql = "INSERT OR REPLACE INTO constraint_active "
+			  "(project_id, constraint_digest, updated_at) "
+			  "VALUES (?, ?, ?)";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = "prepare constraint_active failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, digest.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, declared_at.c_str(), -1, SQLITE_TRANSIENT);
+	int rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE) {
+		error = "constraint_active write failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	return true;
+}
+
+/// Deactivate constraints for a project: clear the active-digest pointer
+/// WITHOUT deleting the declaration rows.  Historical runs reference
+/// the digest; deleting the rows would make those runs unqueryable.
+/// The pointer is cleared atomically so a failure rolls back.
+///
+/// Uses SAVEPOINT when the caller already holds a transaction, so a
+/// failure rolls back only this section — a bare ROLLBACK when we do
+/// not own the transaction would either error or roll back the caller's
+/// entire transaction.
+bool deactivateConstraints(store::GraphStore &store, uint64_t project_id,
+			   const std::string &declared_at, std::string &error)
+{
+	sqlite3 *db = store.handle();
+	if (!db) {
+		error = "database not open [module=constraint, "
+			"method=deactivateConstraints]";
+		return false;
+	}
+	const bool own_txn = sqlite3_get_autocommit(db) != 0;
+	const char *sp = "constraint_deact";
+	if (own_txn) {
+		if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) !=
+		    SQLITE_OK) {
+			error = std::string("BEGIN failed: ") +
+				sqlite3_errmsg(db);
+			return false;
+		}
+	} else {
+		std::string save = std::string("SAVEPOINT ") + sp;
+		if (sqlite3_exec(db, save.c_str(), nullptr, nullptr, nullptr) !=
+		    SQLITE_OK) {
+			error = "SAVEPOINT failed: " +
+				std::string(sqlite3_errmsg(db));
+			return false;
+		}
+	}
+	auto rollback = [&]() {
+		if (own_txn)
+			sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		else {
+			sqlite3_exec(db,
+				     (std::string("ROLLBACK TO ") + sp).c_str(),
+				     nullptr, nullptr, nullptr);
+			sqlite3_exec(db, (std::string("RELEASE ") + sp).c_str(),
+				     nullptr, nullptr, nullptr);
+		}
+	};
+	// Clear the pointer but keep the declaration rows so historical
+	// runs that reference the old digest can still query them.
+	if (!updateActiveDigest(db, project_id, "", declared_at, error)) {
+		rollback();
+		return false;
+	}
+	if (own_txn && sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
+			       SQLITE_OK) {
+		error = std::string("COMMIT failed: ") + sqlite3_errmsg(db);
+		rollback();
+		return false;
+	}
+	if (!own_txn) {
+		sqlite3_exec(db, (std::string("RELEASE ") + sp).c_str(),
+			     nullptr, nullptr, nullptr);
+	}
+	return true;
+}
+
 /// Persist constraints and layers to the database.
+///
+/// The constraint_active pointer is updated inside the same transaction
+/// so declarations and the active-digest pointer are atomic: a failure
+/// in either rolls back both, and the caller never reports success while
+/// the engine still uses the previous constraint set.
+///
+/// Uses SAVEPOINT when the caller already holds a transaction, so a
+/// failure in any step rolls back only this section's writes — a bare
+/// ROLLBACK when we do not own the transaction is either a no-op (leaving
+/// the DELETE committed) or rolls back the caller's entire transaction.
 bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			const std::string &digest,
 			const std::vector<DeclaredConstraint> &constraints,
@@ -431,38 +550,68 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			"method=persistConstraints]";
 		return false;
 	}
-	// The caller may already hold a transaction (the enhance pass wraps
-	// several steps): starting a second one fails with "cannot start a
-	// transaction within a transaction". Join the caller's transaction and
-	// roll back only what this call opened.
 	const bool own_txn = sqlite3_get_autocommit(db) != 0;
-	if (own_txn &&
-	    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
-		error = std::string("BEGIN failed: ") + sqlite3_errmsg(db);
-		return false;
+	const char *sp = "constraint_persist";
+	if (own_txn) {
+		if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) !=
+		    SQLITE_OK) {
+			error = std::string("BEGIN failed: ") +
+				sqlite3_errmsg(db);
+			return false;
+		}
+	} else {
+		std::string save = std::string("SAVEPOINT ") + sp;
+		if (sqlite3_exec(db, save.c_str(), nullptr, nullptr, nullptr) !=
+		    SQLITE_OK) {
+			error = "SAVEPOINT failed: " +
+				std::string(sqlite3_errmsg(db));
+			return false;
+		}
 	}
-	auto cleanup = [&]() {
+	auto rollback = [&]() {
 		if (own_txn)
 			sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		else {
+			sqlite3_exec(db,
+				     (std::string("ROLLBACK TO ") + sp).c_str(),
+				     nullptr, nullptr, nullptr);
+			sqlite3_exec(db, (std::string("RELEASE ") + sp).c_str(),
+				     nullptr, nullptr, nullptr);
+		}
 	};
-	if (!deleteOldDeclarations(db, project_id, digest, error)) {
-		cleanup();
+	// Replace only the rows for THIS digest.  Historical digests are
+	// kept so that queries by an old digest (e.g. a historical run's
+	// constraint_digest) still return the declarations that were active
+	// at the time of that run.
+	if (!deleteDeclarationsForDigest(db, project_id, digest, error)) {
+		rollback();
 		return false;
 	}
 	if (!insertConstraints(db, project_id, digest, constraints, declared_at,
 			       error)) {
-		cleanup();
+		rollback();
 		return false;
 	}
 	if (!insertLayers(db, project_id, digest, layers, error)) {
-		cleanup();
+		rollback();
+		return false;
+	}
+	// Update the active-digest pointer inside the same transaction.
+	// A failure here is a real error: the declarations were written but
+	// the pointer was not, so the engine would use the old digest.
+	if (!updateActiveDigest(db, project_id, digest, declared_at, error)) {
+		rollback();
 		return false;
 	}
 	if (own_txn && sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
 			       SQLITE_OK) {
 		error = std::string("COMMIT failed: ") + sqlite3_errmsg(db);
-		cleanup();
+		rollback();
 		return false;
+	}
+	if (!own_txn) {
+		sqlite3_exec(db, (std::string("RELEASE ") + sp).c_str(),
+			     nullptr, nullptr, nullptr);
 	}
 	return true;
 }
@@ -491,6 +640,18 @@ ConstraintLoadResult loadConstraints(store::GraphStore &store,
 	std::string path = findConstraintFile(project_root);
 	if (path.empty()) {
 		result.no_file = true;
+		// No profile file: deactivate constraints by clearing the
+		// active-digest pointer.  Declaration rows are NOT deleted —
+		// historical runs reference the old digest and must remain
+		// queryable (§18.2.2-B: "keyed by constraint_digest so
+		// historical runs can reference the exact declaration set").
+		// A deactivation failure must propagate: leaving the old
+		// digest active after the profile is removed is a real error.
+		std::string deact_error;
+		if (!deactivateConstraints(store, project_id,
+					   result.declared_at, deact_error)) {
+			result.error = "deactivate failed: " + deact_error;
+		}
 		return result;
 	}
 
@@ -513,6 +674,9 @@ ConstraintLoadResult loadConstraints(store::GraphStore &store,
 	result.layers = layers;
 	result.constraint_digest = computeConstraintDigest(constraints, layers);
 
+	// persistConstraints now writes the constraint_active pointer inside
+	// the same transaction as the declarations, so a failure in either
+	// rolls back both.  No separate pointer update is needed here.
 	std::string persist_error;
 	if (!persistConstraints(store, project_id, result.constraint_digest,
 				constraints, layers, result.declared_at,
@@ -536,12 +700,15 @@ computeConstraintDigest(const std::vector<DeclaredConstraint> &constraints,
 				(dc.enabled ? "1" : "0"));
 	}
 	std::sort(parts.begin(), parts.end());
+	// Layers are NOT sorted: the declaration order defines the layer
+	// hierarchy (earlier = higher). Sorting them would make swapping two
+	// layers produce the same digest, breaking the identity guarantee
+	// that a changed digest signals changed semantics.
 	std::vector<std::string> layer_parts;
 	for (const auto &l : layers) {
 		layer_parts.push_back("L:" + l.layer_name + ":" +
 				      l.path_pattern);
 	}
-	std::sort(layer_parts.begin(), layer_parts.end());
 
 	std::string content;
 	for (const auto &p : parts)
@@ -558,14 +725,65 @@ std::string activeConstraintDigest(store::GraphStore &store,
 	sqlite3 *db = store.handle();
 	if (!db)
 		return "";
-	const char *sql = "SELECT constraint_digest FROM constraint_decl "
-			  "WHERE project_id = ? "
-			  "ORDER BY declared_at DESC LIMIT 1";
+	// Migration 19 introduced constraint_active as the authoritative
+	// source. The old ORDER BY declared_at DESC heuristic selected
+	// historical digests after a profile switch or removal.
+	//
+	// constraint_active may contain '' (empty) when the profile was
+	// explicitly removed; this is distinct from no row (pre-migration-19
+	// DB). An empty digest means "no active constraints" — a deliberate
+	// deactivation, not a missing record. Returning it directly prevents
+	// the fallback from re-activating a historical digest after the
+	// profile was removed.
+	const char *sql = "SELECT constraint_digest FROM constraint_active "
+			  "WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const unsigned char *text =
+				sqlite3_column_text(stmt, 0);
+			std::string digest;
+			if (text)
+				digest = reinterpret_cast<const char *>(text);
+			sqlite3_finalize(stmt);
+			// Return directly, including empty: a row in
+			// constraint_active (even with '') is authoritative.
+			// Falling through to historical digests would
+			// re-activate a stale constraint set after removal.
+			return digest;
+		}
+		sqlite3_finalize(stmt);
+	} else {
+		sqlite3_finalize(stmt);
+	}
+	// Fallback for databases not yet at migration 19: use the old
+	// heuristic. constraint_decl carries the declared_at timestamp.
+	// This path is ONLY reached when constraint_active has no row at
+	// all (pre-migration-19 DB), not when it contains an empty digest.
+	const char *old_sql = "SELECT constraint_digest FROM constraint_decl "
+			      "WHERE project_id = ? "
+			      "ORDER BY declared_at DESC LIMIT 1";
+	if (sqlite3_prepare_v2(db, old_sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return "";
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	std::string digest;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *text = sqlite3_column_text(stmt, 0);
+		if (text)
+			digest = reinterpret_cast<const char *>(text);
+	}
+	sqlite3_finalize(stmt);
+	if (!digest.empty())
+		return digest;
+	// Layers-only profile: no constraint_decl rows, fall back to
+	// arch_layer_decl.
+	const char *layer_sql =
+		"SELECT DISTINCT constraint_digest FROM arch_layer_decl "
+		"WHERE project_id = ? LIMIT 1";
+	if (sqlite3_prepare_v2(db, layer_sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return "";
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		const unsigned char *text = sqlite3_column_text(stmt, 0);
 		if (text)
