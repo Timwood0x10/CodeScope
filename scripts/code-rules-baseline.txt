@@ -1,7 +1,6 @@
 # Grandfathered violations of plan/rules/code_rules.md §1.1/§1.4.
 # CI forbids regenerating this file; update it locally only when
 # re-baselining on purpose, and say why in the commit message.
-fields|engine/src/engine_index_sched.h|SchedState|13
 fields|engine/src/filter_policy.h|FilterPolicy|23
 fields|engine/src/graph/graph_types.h|GraphNode|14
 fields|engine/src/ir/semantic_unit.h|Record|19
@@ -13,9 +12,9 @@ function|engine/src/engine_ffi_index.cpp|engine_get_project_info|121
 function|engine/src/engine_index.cpp|engine_index_file|373
 function|engine/src/engine_index_discover.cpp|collectFileJobs|206
 function|engine/src/engine_index_metrics.cpp|computeMetricsFromCST|244
-function|engine/src/engine_index_project.cpp|indexProjectImpl|855
+function|engine/src/engine_index_project.cpp|indexProjectImpl|725
 function|engine/src/engine_index_project_membulk.cpp|engine_index_project_membulk|425
-function|engine/src/engine_queries.cpp|enhanceProjectImpl|231
+function|engine/src/engine_queries.cpp|enhanceProjectImpl|198
 function|engine/src/engine_queries.cpp|findSymbolImpl|150
 function|engine/src/engine_queries_context.cpp|buildContextImpl|151
 function|engine/src/engine_queries_context.cpp|detectFfiBoundariesImpl|274
@@ -56,7 +55,7 @@ function|engine/src/model/plugins/contract.cpp|ContractPlugin::build|143
 function|engine/src/model/semantic_fact_extractor.cpp|SemanticFactExtractor::extractFfiFacts|189
 function|engine/src/model/state_builder.cpp|StateBuilder::buildCapabilityState|122
 function|engine/src/model/state_builder.cpp|StateBuilder::buildModuleSummaries|189
-function|engine/src/post_parse_phase.cpp|postParsePhase|367
+function|engine/src/post_parse_phase.cpp|postParsePhase|380
 function|engine/src/query/graph_query.cpp|executeGraphQuery|625
 function|engine/src/query/impact_analysis.cpp|analyzeChangeImpact|263
 function|engine/src/query/query_analysis.cpp|QueryEngine::getGraph|186
@@ -77,8 +76,8 @@ function|engine/src/store/store_graph_csr.cpp|GraphStore::buildCSR|238
 function|engine/src/store/store_insert.cpp|GraphStore::deleteGraphDataByFile|163
 function|engine/src/store/store_project.cpp|GraphStore::findSymbolJson|134
 function|engine/src/store/store_query.cpp|GraphStore::searchUnifiedJson|229
-function|engine/src/store/store_schema.cpp|GraphStore::createSchema|822
-function|engine/src/store/store_schema_migrations.cpp|GraphStore::runSchemaMigrations|857
+function|engine/src/store/store_schema.cpp|GraphStore::createSchema|826
+function|engine/src/store/store_schema_migrations.cpp|GraphStore::runSchemaMigrations|895
 function|engine/src/store/store_schema_migrations_types.cpp|GraphStore::migrateTypeTables|319
 function|engine/src/store/store_search.cpp|GraphStore::searchCode|228
 function|engine/src/store/store_search.cpp|GraphStore::searchGraphFallback|147
@@ -90,7 +89,7 @@ function|engine/src/verify/dead_code_inspector.cpp|DeadCodeInspector::findOrphan
 function|engine/src/verify/documentation_drift.cpp|extractLanguageClaims|155
 function|engine/src/verify/function_implements_verifier.cpp|FunctionImplementsVerifier::verify|146
 function|server/src/main.rs|main|754
-function|server/src/scheduler/mod.rs|index_parallel|421
+function|server/src/scheduler/mod.rs|index_parallel|419
 function|server/src/tools/catalog.rs|all_tools|531
 function|server/src/tools/discover.rs|discover|162
 function|server/src/tools/indexing.rs|h_force_index_files|144

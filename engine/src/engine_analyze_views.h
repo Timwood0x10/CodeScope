@@ -21,6 +21,8 @@ struct Scope {
 	std::string symbol;
 	std::string module;
 	std::string file_filter;
+	std::string run_id;
+	std::vector<std::string> files; ///< For change_context/reverify
 };
 
 /// Parse the `scope` JSON object.
@@ -95,7 +97,7 @@ bool parseFileList(const char *scope_json, std::vector<std::string> &files,
 /// @param files      List of modified file paths (project-relative).
 /// @return Heap JSON string; the caller frees it with engine_free_string().
 char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
-			 const std::vector<std::string> &files);
+			 const Scope &scope);
 
 /// Build the `robustness` payload (development_plan §5.4 D4, §12.4 M3-1).
 ///

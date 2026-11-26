@@ -81,7 +81,9 @@ struct TestCandidate {
 struct RunInfo {
 	std::string run_id;
 	std::string status;
+	std::string worktree_digest;
 	bool ok = true;
+	bool exists = false;
 };
 
 /// Entities matching a bare or qualified name, optionally filtered by path.
@@ -130,6 +132,13 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 
 /// Most recent verification run, whatever its status.
 RunInfo queryLatestRun(sqlite3 *db, uint64_t project_id);
+
+/// Query a specific run by run_id, verifying it belongs to the project.
+/// Returns ok=false on SQL error, exists=false when the run is not found.
+/// When the run does not exist or does not belong to project_id, the
+/// caller must report unknown rather than fall back to the latest run.
+RunInfo queryRunById(sqlite3 *db, uint64_t project_id,
+		     const std::string &run_id);
 
 } // namespace engine_views
 

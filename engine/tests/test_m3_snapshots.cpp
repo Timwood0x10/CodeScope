@@ -288,6 +288,11 @@ static void testDriftDetectionAndHistory()
 	execSql(store, "DELETE FROM arch_module WHERE project_id=1");
 
 	// Set up a violation.
+	execSql(store, "INSERT OR IGNORE INTO constraint_decl "
+		       "(project_id, constraint_digest, constraint_id, "
+		       "type, params_json, declared_at) "
+		       "VALUES (1,'d','layer_order','layers','{}',"
+		       "'2026-01-01T00:00:00Z')");
 	execSql(store, "INSERT OR IGNORE INTO arch_module "
 		       "(project_id, path, parent_path, language, "
 		       "file_count, entity_count) "

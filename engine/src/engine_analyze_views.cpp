@@ -1,16 +1,15 @@
 // engine_analyze_views.cpp — read-only task-context views of analyze_project.
 //
-// development_plan §18.7.2: an Agent asks for the context around one symbol or
-// module and gets definitions, direct callers/callees, findings and test
-// candidates, each tagged with its source and bounded by an explicit budget.
-//
-// The SQL lives in engine_analyze_queries.cpp; this file owns the JSON shape and
-// the rule that a failed read is written as `unknown`, never as an empty list.
+// §18.7.2: an Agent asks for the context around one symbol or module and gets
+// definitions, callers/callees, findings and test candidates, each tagged with
+// its source and bounded by an explicit budget. A failed read is `unknown`,
+// never an empty list. SQL lives in engine_analyze_queries.cpp.
 
 #include "engine_analyze_views.h"
 
 #include "engine_analyze_queries.h"
 #include "engine_internal.h"
+#include "store/store.h"
 #include "util/json_parse.h"
 #include "util/json_writer.h"
 
@@ -81,6 +80,17 @@ bool parseScope(const char *scope_json, Scope &out, std::string &error)
 	out.symbol = stringField(root, "symbol");
 	out.module = stringField(root, "module");
 	out.file_filter = stringField(root, "file_filter");
+	out.run_id = stringField(root, "run_id");
+
+	// Parse files array for change_context/reverify views.
+	const util::JsonValue *arr = root.find("files");
+	if (arr && arr->type == util::JsonValue::Type::Array) {
+		out.files.clear();
+		for (const auto &val : arr->array_value) {
+			if (val.type == util::JsonValue::Type::String)
+				out.files.push_back(val.string_value);
+		}
+	}
 
 	// `src/` and `src` must address the same module: the query builds a
 	// `src//%` prefix otherwise, which silently drops every sub-directory.
@@ -133,8 +143,6 @@ bool parseRunIds(const char *scope_json, std::string &base_run_id,
 
 namespace
 {
-
-// ── Section writers ─────────────────────────────────────────────
 
 void writeFreshness(util::JsonWriter &w, const RunInfo &run)
 {
@@ -317,6 +325,65 @@ void collectFailure(std::vector<std::string> &failed, bool ok, const char *name)
 		failed.push_back(name);
 }
 
+/// Resolve the run to report freshness for, honouring an optional
+/// scope.run_id. Returns nullptr on success, or an error envelope
+/// when the run_id does not exist, is not the latest, or has a
+/// worktree_digest mismatch (re-index without a new Run).
+char *resolveRunForScope(store::GraphStore &store, uint64_t project_id,
+			 const Scope &scope, RunInfo &out_run)
+{
+	sqlite3 *db = store.handle();
+	if (scope.run_id.empty()) {
+		out_run = queryLatestRun(db, project_id);
+		return nullptr;
+	}
+	out_run = queryRunById(db, project_id, scope.run_id);
+	if (!out_run.ok)
+		return dupString(util::errorEnvelope("ffi",
+						     "engine_analyze_project",
+						     "run_id query failed"));
+	if (!out_run.exists)
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_analyze_project",
+			"specified run_id not found or does not belong "
+			"to project " +
+				std::to_string(project_id)));
+	RunInfo latest = queryLatestRun(db, project_id);
+	if (latest.ok && latest.run_id != out_run.run_id)
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_analyze_project",
+			"historical run_id scope is not supported: the "
+			"database does not store per-run snapshots. "
+			"Specified run " +
+				out_run.run_id + " is not the latest run " +
+				latest.run_id +
+				"; use compare_snapshots to diff two runs."));
+	// worktree_digest mismatch: re-index without a new Run.
+	if (!out_run.worktree_digest.empty()) {
+		std::string wd = store.worktreeDigest(project_id);
+		if (wd.empty()) {
+			std::string err = store.error();
+			if (!err.empty())
+				return dupString(util::errorEnvelope(
+					"ffi", "engine_analyze_project",
+					"cannot verify run freshness: "
+					"worktree digest query failed (" +
+						err +
+						"). Refusing to serve a "
+						"potentially stale run."));
+		} else if (wd != out_run.worktree_digest) {
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_analyze_project",
+				"run_id " + out_run.run_id +
+					" was taken against a different "
+					"source state (worktree_digest "
+					"mismatch). Re-run engine_run_rules "
+					"to produce a fresh run."));
+		}
+	}
+	return nullptr;
+}
+
 } // namespace
 
 char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
@@ -328,9 +395,9 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	w.key("view").value("symbol_context");
 	w.key("project_id").value(project_id);
 
-	// Read the run up front: every branch reports freshness, and claiming
-	// "no run found" on a symbol typo would be a statement nobody queried.
-	const RunInfo run = queryLatestRun(db, project_id);
+	RunInfo run;
+	if (auto *err = resolveRunForScope(*ctx->store, project_id, scope, run))
+		return err;
 
 	// Resolve entity. A failed lookup is an error, not "symbol not found":
 	// telling the caller the symbol does not exist when the query died would
@@ -438,6 +505,10 @@ char *buildModuleContext(EngineContext *ctx, uint64_t project_id,
 	w.key("project_id").value(project_id);
 	w.key("module").value(scope.module);
 
+	RunInfo run;
+	if (auto *err = resolveRunForScope(*ctx->store, project_id, scope, run))
+		return err;
+
 	const Page<EntityRow> entities =
 		queryModuleEntities(db, project_id, scope.module);
 	const int returned = std::min(static_cast<int>(entities.rows.size()),
@@ -474,7 +545,6 @@ char *buildModuleContext(EngineContext *ctx, uint64_t project_id,
 	collectFailure(failed, findings.ok, "findings");
 	writeFindings(w, findings);
 
-	const RunInfo run = queryLatestRun(db, project_id);
 	collectFailure(failed, run.ok, "verification_run");
 	writeFreshness(w, run);
 	writeUnknowns(w, !run.run_id.empty(), failed);
@@ -735,71 +805,130 @@ void writeAffectedFindings(util::JsonWriter &w, sqlite3 *db,
 	w.endObject();
 }
 
+/// Resolve a list of file paths to the set of module paths they belong to.
+/// A file belongs to a module when it starts with the module path + '/'.
+std::unordered_set<std::string>
+resolveFilesToModules(sqlite3 *db, uint64_t project_id,
+		      const std::vector<std::string> &files)
+{
+	std::unordered_set<std::string> module_paths;
+	sqlite3_stmt *mod_stmt = nullptr;
+	const char *mod_sql = "SELECT path FROM arch_module "
+			      "WHERE project_id=?";
+	if (sqlite3_prepare_v2(db, mod_sql, -1, &mod_stmt, nullptr) !=
+	    SQLITE_OK)
+		return module_paths;
+	sqlite3_bind_int64(mod_stmt, 1, static_cast<int64_t>(project_id));
+	std::vector<std::string> all_modules;
+	while (sqlite3_step(mod_stmt) == SQLITE_ROW) {
+		const unsigned char *p = sqlite3_column_text(mod_stmt, 0);
+		if (p)
+			all_modules.push_back(
+				reinterpret_cast<const char *>(p));
+	}
+	sqlite3_finalize(mod_stmt);
+	for (const auto &f : files) {
+		// Select the LONGEST matching module prefix so that a
+		// file like src/store/repo.cpp maps to "src/store" rather
+		// than "src" when both modules exist.  Breaking on the
+		// first match left nested files on the shorter parent and
+		// dropped their real module's structural edges.
+		const std::string *best_mod = nullptr;
+		size_t best_len = 0;
+		for (const auto &mod : all_modules) {
+			std::string prefix = mod + "/";
+			if (f.size() >= prefix.size() &&
+			    f.compare(0, prefix.size(), prefix) == 0) {
+				if (mod.size() > best_len) {
+					best_mod = &mod;
+					best_len = mod.size();
+				}
+			}
+			if (f == mod && mod.size() > best_len) {
+				best_mod = &mod;
+				best_len = mod.size();
+			}
+		}
+		if (best_mod)
+			module_paths.insert(*best_mod);
+	}
+	return module_paths;
+}
+
 /// Section 4 of change_context: structural edges touching affected modules.
+///
+/// Files map to modules via arch_module: a file `"src/api/controller.cpp"`
+/// belongs to module `"src/api"`. The previous implementation used the full
+/// file path as a LIKE prefix against arch_edge.src_module, which never
+/// matched because `"src/api/controller.cpp%"` does not match `"src/api"`.
+/// We first resolve each file to its module path(s) and then query edges
+/// by module path.
 void writeAffectedStructuralEdges(util::JsonWriter &w, sqlite3 *db,
 				  uint64_t project_id,
 				  const std::vector<std::string> &files,
 				  std::vector<std::string> &failed)
 {
 	w.key("affected_structural_edges").beginObject();
-	{
-		sqlite3_stmt *stmt = nullptr;
-		std::string sql =
-			"SELECT ae.src_module, ae.dst_module, ae.edge_kind, "
-			"       ae.resolution_kind, ae.confidence "
-			"FROM arch_edge ae WHERE ae.project_id=? AND (";
-		bool first = true;
-		for (size_t fi = 0; fi < files.size(); ++fi) {
-			(void)fi;
-			if (!first)
-				sql += " OR ";
-			sql += "ae.src_module LIKE substr(?, 1, "
-			       "length(?)) || '%' OR "
-			       "ae.dst_module LIKE substr(?, 1, "
-			       "length(?)) || '%'";
-			first = false;
-		}
-		sql += ") LIMIT 50";
+	auto module_paths = resolveFilesToModules(db, project_id, files);
+	if (module_paths.empty()) {
+		w.key("items").beginArray();
+		w.endArray();
+		w.key("total").value(0);
+		w.key("source").value("fact");
+		w.key("note").value("no modified file maps to a known "
+				    "module");
+		w.endObject();
+		return;
+	}
 
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			int param = 2;
-			for (const auto &f : files) {
-				for (int j = 0; j < 4; ++j)
-					sqlite3_bind_text(stmt, param++,
-							  f.c_str(), -1,
-							  SQLITE_TRANSIENT);
-			}
+	sqlite3_stmt *stmt = nullptr;
+	std::string sql = "SELECT ae.src_module, ae.dst_module, ae.edge_kind, "
+			  "       ae.resolution_kind, ae.confidence "
+			  "FROM arch_edge ae WHERE ae.project_id=? AND (";
+	bool first = true;
+	for (size_t fi = 0; fi < module_paths.size(); ++fi) {
+		(void)fi;
+		if (!first)
+			sql += " OR ";
+		sql += "ae.src_module=? OR ae.dst_module=?";
+		first = false;
+	}
+	sql += ") LIMIT 50";
 
-			w.key("items").beginArray();
-			int edge_count = 0;
-			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				w.beginObject();
-				w.key("src_module")
-					.value(columnTextEscaped(stmt, 0));
-				w.key("dst_module")
-					.value(columnTextEscaped(stmt, 1));
-				w.key("edge_kind")
-					.value(columnTextEscaped(stmt, 2));
-				w.key("resolution_kind")
-					.value(columnTextEscaped(stmt, 3));
-				w.key("confidence")
-					.value(sqlite3_column_double(stmt, 4));
-				w.endObject();
-				++edge_count;
-			}
-			w.endArray();
-			w.key("total").value(edge_count);
-			w.key("source").value("fact");
-			sqlite3_finalize(stmt);
-		} else {
-			w.key("status").value("unknown");
-			w.key("reason").value("structural edge query failed");
-			w.key("source").value("unknown");
-			failed.push_back("affected_structural_edges");
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		int param = 2;
+		for (const auto &mod : module_paths) {
+			sqlite3_bind_text(stmt, param++, mod.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(stmt, param++, mod.c_str(), -1,
+					  SQLITE_TRANSIENT);
 		}
+
+		w.key("items").beginArray();
+		int edge_count = 0;
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			w.beginObject();
+			w.key("src_module").value(columnTextEscaped(stmt, 0));
+			w.key("dst_module").value(columnTextEscaped(stmt, 1));
+			w.key("edge_kind").value(columnTextEscaped(stmt, 2));
+			w.key("resolution_kind")
+				.value(columnTextEscaped(stmt, 3));
+			w.key("confidence")
+				.value(sqlite3_column_double(stmt, 4));
+			w.endObject();
+			++edge_count;
+		}
+		w.endArray();
+		w.key("total").value(edge_count);
+		w.key("source").value("fact");
+		sqlite3_finalize(stmt);
+	} else {
+		w.key("status").value("unknown");
+		w.key("reason").value("structural edge query failed");
+		w.key("source").value("unknown");
+		failed.push_back("affected_structural_edges");
 	}
 	w.endObject();
 }
@@ -807,13 +936,23 @@ void writeAffectedStructuralEdges(util::JsonWriter &w, sqlite3 *db,
 } // namespace
 
 char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
-			 const std::vector<std::string> &files)
+			 const Scope &scope)
 {
 	sqlite3 *db = ctx->store->handle();
 	util::JsonWriter w;
 	w.beginObject();
 	w.key("view").value("change_context");
 	w.key("project_id").value(project_id);
+
+	// Honour scope.run_id: if the specified run is not the latest,
+	// refuse instead of silently returning current-version data
+	// under a historical tag. This is the same rule as
+	// symbol_context and module_context.
+	RunInfo run;
+	if (auto *err = resolveRunForScope(*ctx->store, project_id, scope, run))
+		return err;
+
+	const auto &files = scope.files;
 
 	// Report the input files.
 	w.key("modified_files").beginObject();
@@ -844,8 +983,7 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 	w.key("source").value("declared");
 	w.endObject();
 
-	// Freshness and unknowns.
-	const RunInfo run = queryLatestRun(db, project_id);
+	// Freshness and unknowns (run was resolved above via resolveRunForScope).
 	collectFailure(failed, run.ok, "verification_run");
 	writeFreshness(w, run);
 	writeUnknowns(w, !run.run_id.empty(), failed);

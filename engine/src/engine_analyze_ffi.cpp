@@ -81,6 +81,13 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 		if (!engine_views::parseScope(scope_json, scope, scope_error))
 			return reject(scope_error);
 
+		// The FFI run_id parameter fills in scope.run_id when the scope JSON
+		// did not specify one explicitly. This lets symbol_context and
+		// module_context honour a caller-supplied run_id without changing the
+		// scope JSON format.
+		if (scope.run_id.empty() && run_id)
+			scope.run_id = run_id;
+
 		if (view_str == "symbol_context") {
 			if (scope.symbol.empty())
 				return reject("scope.symbol is required for "
@@ -105,12 +112,12 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 				ctx, project_id, base_id, target_id);
 		}
 		if (view_str == "change_context") {
-			std::vector<std::string> files;
-			if (!engine_views::parseFileList(scope_json, files,
-							 scope_error))
-				return reject(scope_error);
+			if (scope.files.empty())
+				return reject(
+					"scope.files is required and must be a "
+					"non-empty array for change_context view");
 			return engine_views::buildChangeContext(ctx, project_id,
-								files);
+								scope);
 		}
 		if (view_str == "reverify") {
 			std::vector<std::string> files;

@@ -113,8 +113,8 @@ static void insertRun(const std::string &run_id, uint64_t project_id,
 		"('" +
 		run_id + "'," + std::to_string(project_id) + ",'rev1','" +
 		worktree +
-		"','v0.3.0','rule_digest',''"
-		",'filter_digest','conformance','2026-01-01T00:00:00Z',"
+		"','v0.3.0','rule_digest','none'"
+		",'none','conformance','2026-01-01T00:00:00Z',"
 		"'2026-01-01T00:01:00Z','" +
 		status + "','{}','')";
 	check(execSql(sql) == 0, "insertRun must succeed");

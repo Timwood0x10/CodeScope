@@ -61,6 +61,9 @@ struct RunMeta {
 	std::string profile;
 	std::string started_at;
 	std::string worktree_digest;
+	std::string rule_set_digest;
+	std::string constraint_digest;
+	std::string filter_policy_digest;
 };
 
 /// Rule execution info for one run: rule_id → (status, version).
@@ -120,9 +123,12 @@ RunMeta queryRunMeta(sqlite3 *db, const std::string &run_id,
 		     uint64_t project_id)
 {
 	RunMeta meta;
-	const char *sql = "SELECT status, profile, started_at, worktree_digest "
-			  "FROM verification_run "
-			  "WHERE run_id = ? AND project_id = ?";
+	const char *sql =
+		"SELECT status, profile, started_at, worktree_digest, "
+		"rule_set_digest, constraint_digest, "
+		"filter_policy_digest "
+		"FROM verification_run "
+		"WHERE run_id = ? AND project_id = ?";
 	sqlite3_stmt *st = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
 		meta.ok = false;
@@ -142,6 +148,9 @@ RunMeta queryRunMeta(sqlite3 *db, const std::string &run_id,
 		meta.profile = text(1);
 		meta.started_at = text(2);
 		meta.worktree_digest = text(3);
+		meta.rule_set_digest = text(4);
+		meta.constraint_digest = text(5);
+		meta.filter_policy_digest = text(6);
 	} else if (rc != SQLITE_DONE) {
 		// A step error (not just "no rows") — the query itself
 		// failed, and must not be confused with "run not found".
@@ -188,8 +197,53 @@ RuleExecSet queryRuleExec(sqlite3 *db, const std::string &run_id, bool *ok)
 	return set;
 }
 
-// ── Diff computation ────────────────────────────────────────────
-
+/// Check whether the two runs' input parameters are comparable.
+///
+/// Two runs are input-comparable only when every digest present on
+/// one side is present and equal on the other.  An empty digest on
+/// one side and a non-empty digest on the other means the input set
+/// changed (added or removed) — the runs are not comparable, because
+/// the finding's appearance/disappearance may be caused by the changed
+/// input, not by a real fix or a real new defect.
+///
+/// When both digests are empty the input is "not recorded" (the
+/// production entry engine_evidence_ffi.cpp does not yet populate
+/// constraint_digest or filter_policy_digest), not "absent on both
+/// sides".  Treating unrecorded inputs as comparable would let two
+/// runs with unknown inputs produce a definitive "resolved" verdict.
+/// Mark them incomparable instead.
+bool inputsComparable(const RunMeta &base, const RunMeta &target,
+		      std::string &reason)
+{
+	auto check = [&](const std::string &b, const std::string &t,
+			 const char *label) -> bool {
+		if (b.empty() && t.empty()) {
+			reason = std::string(label) +
+				 " not recorded on either side";
+			return false;
+		}
+		if (b.empty() || t.empty()) {
+			reason = std::string(label) +
+				 " changed (empty on one side)";
+			return false;
+		}
+		if (b != t) {
+			reason = std::string(label) + " changed";
+			return false;
+		}
+		return true;
+	};
+	if (!check(base.rule_set_digest, target.rule_set_digest,
+		   "rule_set_digest"))
+		return false;
+	if (!check(base.constraint_digest, target.constraint_digest,
+		   "constraint_digest"))
+		return false;
+	if (!check(base.filter_policy_digest, target.filter_policy_digest,
+		   "filter_policy_digest"))
+		return false;
+	return true;
+}
 struct DiffEntry {
 	std::string finding_key;
 	std::string rule_id;
@@ -201,16 +255,29 @@ struct DiffEntry {
 /// Classify a base-only finding: resolved or incomparable.
 ///
 /// §6.3 preconditions for "resolved": the rule executed successfully
-/// in target with the same rule_version as in base. If the rule was
-/// skipped, failed, absent, or upgraded in target, the finding is
-/// incomparable — its absence may be due to the rule not running or
-/// running differently, not due to the issue being fixed.
+/// in target with the same rule_version as in base, AND the run's input
+/// parameters (rule_set_digest, constraint_digest, filter_policy_digest)
+/// are unchanged. If the rule was skipped, failed, absent, or upgraded
+/// in target, or if the inputs changed, the finding is incomparable —
+/// its absence may be due to the rule not running or running differently,
+/// not due to the issue being fixed.
 void classifyBaseOnly(const EvidenceRow &row, const RuleExecSet &target_rules,
+		      const RunMeta &base_meta, const RunMeta &target_meta,
 		      DiffEntry &e)
 {
 	e.finding_key = row.finding_key;
 	e.rule_id = row.rule_id;
 	e.rule_version = row.rule_version;
+	// Input parameter changes: if the rule set, constraints, or filter
+	// policy differ between runs (including one side empty and the other
+	// not), a base-only finding's disappearance may be caused by the
+	// changed inputs, not by a real fix.
+	std::string input_reason;
+	if (!inputsComparable(base_meta, target_meta, input_reason)) {
+		e.state = "incomparable";
+		e.reason = input_reason;
+		return;
+	}
 	auto it = target_rules.executed.find(row.rule_id);
 	if (it != target_rules.executed.end()) {
 		// Rule executed in target — check version.
@@ -235,12 +302,26 @@ void classifyBaseOnly(const EvidenceRow &row, const RuleExecSet &target_rules,
 /// base (failed, skipped, or absent), the finding is incomparable
 /// rather than new — its absence from base may be because the rule
 /// never ran, not because the issue is genuinely new.
+///
+/// Input parameter changes are also checked symmetrically: when the
+/// rule set, constraints, or filter policy differ between runs, a
+/// target-only finding's appearance may be caused by the changed
+/// inputs, not by a real new defect.
 void classifyTargetOnly(const EvidenceRow &row, const RuleExecSet &base_rules,
+			const RunMeta &base_meta, const RunMeta &target_meta,
 			DiffEntry &e)
 {
 	e.finding_key = row.finding_key;
 	e.rule_id = row.rule_id;
 	e.rule_version = row.rule_version;
+	// Input parameter changes: symmetric with classifyBaseOnly so that
+	// swapping base/target produces the same incomparable judgement.
+	std::string input_reason;
+	if (!inputsComparable(base_meta, target_meta, input_reason)) {
+		e.state = "incomparable";
+		e.reason = input_reason;
+		return;
+	}
 	auto it = base_rules.executed.find(row.rule_id);
 	if (it != base_rules.executed.end()) {
 		// Rule executed in base — check version.
@@ -263,7 +344,9 @@ void classifyTargetOnly(const EvidenceRow &row, const RuleExecSet &base_rules,
 std::vector<DiffEntry> computeDiff(const std::vector<EvidenceRow> &base_ev,
 				   const std::vector<EvidenceRow> &target_ev,
 				   const RuleExecSet &base_rules,
-				   const RuleExecSet &target_rules)
+				   const RuleExecSet &target_rules,
+				   const RunMeta &base_meta,
+				   const RunMeta &target_meta)
 {
 	std::vector<DiffEntry> result;
 	size_t i = 0, j = 0;
@@ -272,12 +355,14 @@ std::vector<DiffEntry> computeDiff(const std::vector<EvidenceRow> &base_ev,
 		const auto &t = target_ev[j];
 		if (b.finding_key < t.finding_key) {
 			DiffEntry e;
-			classifyBaseOnly(b, target_rules, e);
+			classifyBaseOnly(b, target_rules, base_meta,
+					 target_meta, e);
 			result.push_back(std::move(e));
 			++i;
 		} else if (b.finding_key > t.finding_key) {
 			DiffEntry e;
-			classifyTargetOnly(t, base_rules, e);
+			classifyTargetOnly(t, base_rules, base_meta,
+					   target_meta, e);
 			result.push_back(std::move(e));
 			++j;
 		} else {
@@ -298,13 +383,15 @@ std::vector<DiffEntry> computeDiff(const std::vector<EvidenceRow> &base_ev,
 	}
 	while (i < base_ev.size()) {
 		DiffEntry e;
-		classifyBaseOnly(base_ev[i], target_rules, e);
+		classifyBaseOnly(base_ev[i], target_rules, base_meta,
+				 target_meta, e);
 		result.push_back(std::move(e));
 		++i;
 	}
 	while (j < target_ev.size()) {
 		DiffEntry e;
-		classifyTargetOnly(target_ev[j], base_rules, e);
+		classifyTargetOnly(target_ev[j], base_rules, base_meta,
+				   target_meta, e);
 		result.push_back(std::move(e));
 		++j;
 	}
@@ -428,8 +515,11 @@ char *serializeDiff(const std::vector<DiffEntry> &diff,
 			incomparable.push_back(e);
 	}
 
-	const bool target_partial = (target_meta.status == "partial" ||
-				     target_meta.status == "failed");
+	// A target run that is partial, failed, or still running cannot
+	// produce a definitive resolved verdict. "running" means the run
+	// has not finished — its findings may still change, so any
+	// base-only finding's absence may be temporary, not a real fix.
+	const bool target_partial = (target_meta.status != "completed");
 	const bool scope_changed = base_meta.exists && target_meta.exists &&
 				   !base_meta.worktree_digest.empty() &&
 				   base_meta.worktree_digest !=
@@ -459,9 +549,10 @@ char *serializeDiff(const std::vector<DiffEntry> &diff,
 	w.key("status").value(target_partial ? "partial" : "comparable");
 	w.key("source_changed").value(scope_changed);
 	if (target_partial)
-		w.key("warning").value("target run is partial/failed; resolved "
-				       "findings may be due to incomplete "
-				       "execution, not actual fixes");
+		w.key("warning").value("target run is not completed (partial/"
+				       "failed/running); resolved findings may "
+				       "be due to incomplete execution, not "
+				       "actual fixes");
 	if (scope_changed)
 		w.key("scope_warning")
 			.value("worktree_digest differs between runs; resolved "
@@ -561,7 +652,8 @@ char *buildCompareSnapshots(EngineContext *ctx, uint64_t project_id,
 		return dupString(util::errorEnvelope(
 			"ffi", kModule, "target run rule_exec query failed"));
 
-	auto diff = computeDiff(base_ev, target_ev, base_rules, target_rules);
+	auto diff = computeDiff(base_ev, target_ev, base_rules, target_rules,
+				base_meta, target_meta);
 	return serializeDiff(diff, base_rules, target_rules, base_meta,
 			     target_meta, base_run_id, target_run_id,
 			     project_id);

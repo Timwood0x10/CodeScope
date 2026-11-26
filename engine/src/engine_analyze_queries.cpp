@@ -520,7 +520,8 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 RunInfo queryLatestRun(sqlite3 *db, uint64_t project_id)
 {
 	RunInfo info;
-	const char *sql = "SELECT run_id, status FROM verification_run "
+	const char *sql = "SELECT run_id, status, worktree_digest "
+			  "FROM verification_run "
 			  "WHERE project_id=? "
 			  "ORDER BY started_at DESC, run_id DESC LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
@@ -532,6 +533,39 @@ RunInfo queryLatestRun(sqlite3 *db, uint64_t project_id)
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		info.run_id = textCol(stmt, 0);
 		info.status = textCol(stmt, 1);
+		info.worktree_digest = textCol(stmt, 2);
+		info.exists = true;
+	}
+	sqlite3_finalize(stmt);
+	return info;
+}
+
+RunInfo queryRunById(sqlite3 *db, uint64_t project_id,
+		     const std::string &run_id)
+{
+	RunInfo info;
+	if (run_id.empty()) {
+		info.ok = false;
+		return info;
+	}
+	const char *sql = "SELECT run_id, status, worktree_digest "
+			  "FROM verification_run "
+			  "WHERE run_id=? AND project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		info.ok = false;
+		return info;
+	}
+	sqlite3_bind_text(stmt, 1, run_id.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	int rc = sqlite3_step(stmt);
+	if (rc == SQLITE_ROW) {
+		info.run_id = textCol(stmt, 0);
+		info.status = textCol(stmt, 1);
+		info.worktree_digest = textCol(stmt, 2);
+		info.exists = true;
+	} else if (rc != SQLITE_DONE) {
+		info.ok = false;
 	}
 	sqlite3_finalize(stmt);
 	return info;

@@ -34,6 +34,7 @@
 
 #include "engine_internal.h"
 #include "async_knowledge.h"
+#include "constraint/constraint_engine.h"
 #include "evidence/evidence_builder.h"
 #include "evidence/rule_runner.h"
 #include "store/store_identity.h"
@@ -46,6 +47,9 @@
 #include <ctime>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -217,6 +221,83 @@ std::string NowIso()
 	return buf;
 }
 
+/// Read a file's content into a string. Returns empty string on failure
+/// (a missing .gitignore is a valid "no rules" state, not an error).
+static std::string readFileContent(const std::string &path)
+{
+	std::ifstream f(path);
+	if (!f.is_open())
+		return {};
+	std::ostringstream ss;
+	ss << f.rdbuf();
+	return ss.str();
+}
+
+/// Populate the input digests on a verification run so compare_snapshots
+/// can tell whether two runs used the same inputs.
+/// - constraint_digest: from the active constraint set; "none-declared"
+///   when no constraints are active (non-empty so inputsComparable does
+///   not treat two no-constraint runs as "not recorded").
+/// - filter_policy_digest: SHA-256 of the effective filtering policy,
+///   including .gitignore content, index mode, language filter, and
+///   CODESCOPE_EXCLUDE_PATHS. A change to any of these alters which
+///   files are indexed, so two runs with different policies must not
+///   be reported as "same inputs".
+void populateInputDigests(store::VerificationRun &run, store::GraphStore &store,
+			  uint64_t project_id)
+{
+	std::string constraint_digest =
+		constraint::activeConstraintDigest(store, project_id);
+	run.constraint_digest = constraint_digest.empty() ? "none-declared" :
+							    constraint_digest;
+
+	// Read the filter policy digest that was stored at index time.
+	// This is the authoritative value — it captures the FilterPolicy
+	// that was actually in effect when the files table was populated,
+	// including the language filter, index mode, .gitignore rules, and
+	// CODESCOPE_EXCLUDE_PATHS patterns loaded into the FilterPolicy
+	// object. Re-hashing .gitignore at run time (the old approach) was
+	// wrong in two ways: (1) editing .gitignore without re-indexing
+	// changed the digest even though the indexed files were identical,
+	// and (2) two indexes with different language filters but the same
+	// .gitignore produced the same digest because the language filter
+	// was not captured.
+	std::string stored_fpd = store.getFilterPolicyDigest(project_id);
+	if (!stored_fpd.empty()) {
+		run.filter_policy_digest = stored_fpd;
+		return;
+	}
+
+	// Fallback: no stored digest (pre-migration DB or index did not
+	// reach postParsePhase). Re-hash from the environment + .gitignore
+	// so compare_snapshots still has a value to compare.
+	std::ostringstream policy;
+
+	const char *exclude_env = std::getenv("CODESCOPE_EXCLUDE_PATHS");
+	policy << "EXCLUDE="
+	       << (exclude_env && *exclude_env ? exclude_env : "no-exclusions")
+	       << "\n";
+
+	const char *index_mode = std::getenv("CODESCOPE_INDEX_MODE");
+	policy << "MODE=" << (index_mode && *index_mode ? index_mode : "normal")
+	       << "\n";
+
+	std::string root = store.getProjectRootPath(project_id);
+	if (!root.empty()) {
+		std::string gitignore_path = root + "/.gitignore";
+		std::string gitignore_content = readFileContent(gitignore_path);
+		policy << "GITIGNORE=" << store::Sha256Hex(gitignore_content)
+		       << "\n";
+
+		std::string csignore_path = root + "/.codescopeignore";
+		std::string csignore_content = readFileContent(csignore_path);
+		policy << "CSIGNORE=" << store::Sha256Hex(csignore_content)
+		       << "\n";
+	}
+
+	run.filter_policy_digest = store::Sha256Hex(policy.str());
+}
+
 } // namespace
 
 /// Aggregate of one batch of rule executions.
@@ -386,6 +467,11 @@ char *engine_run_rules(engine_t handle, uint64_t project_id,
 		run.source.analyzer_version = kAnalyzerVersion;
 
 		run.rule_set_digest = RuleSetDigest(builder.ruleSets());
+
+		// Populate constraint_digest and filter_policy_digest so
+		// compare_snapshots can tell whether two runs used the same
+		// inputs. See populateInputDigests for the sentinel logic.
+		populateInputDigests(run, *ctx->store, project_id);
 
 		run.profile = "default";
 		run.started_at = NowIso();
