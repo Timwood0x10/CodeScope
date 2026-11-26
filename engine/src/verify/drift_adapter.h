@@ -64,9 +64,12 @@ DriftResult detectAndPersistDrift(store::GraphStore &store, uint64_t project_id,
 ///
 /// @param store     The GraphStore to query.
 /// @param project_id The project.
+/// @param error      Optional output: set to a non-empty string on query
+///   failure so the caller can abort before persisting.
 /// @return Vector of DriftItem, one per violation.
-std::vector<DriftItem> detectArchitectureDriftAdapted(store::GraphStore &store,
-						      uint64_t project_id);
+std::vector<DriftItem>
+detectArchitectureDriftAdapted(store::GraphStore &store, uint64_t project_id,
+			       std::string *error = nullptr);
 
 } // namespace verify
 

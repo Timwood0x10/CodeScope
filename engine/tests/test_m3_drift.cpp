@@ -70,10 +70,23 @@ static void insertEdge(store::GraphStore &store, uint64_t project_id,
 	execSql(store, sql.c_str());
 }
 
+static void insertConstraintDecl(store::GraphStore &store, uint64_t project_id,
+				 const std::string &digest)
+{
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO constraint_decl "
+			    "(project_id, constraint_digest, constraint_id, "
+			    "type, params_json, declared_at) VALUES (") +
+		std::to_string(project_id) + ",'" + digest +
+		"','layer_order','layers','{}','2026-01-01T00:00:00Z')";
+	execSql(store, sql.c_str());
+}
+
 static void insertLayerDecl(store::GraphStore &store, uint64_t project_id,
 			    const std::string &layer_name,
 			    const std::string &path_pattern)
 {
+	insertConstraintDecl(store, project_id, "test_digest");
 	std::string sql =
 		std::string("INSERT OR IGNORE INTO arch_layer_decl "
 			    "(project_id, constraint_digest, layer_name, "
