@@ -199,6 +199,20 @@ class FilterPolicy {
 	}
 	void printStats() const;
 
+	/// Compute a SHA-256 digest of the effective filtering policy.
+	///
+	/// This captures every input that determines which files the indexer
+	/// actually accepted or rejected: the index mode, the language
+	/// filter, the language context, the loaded .gitignore rules, the
+	/// loaded .codescopeignore patterns, and the CODESCOPE_EXCLUDE_PATHS
+	/// globs. The digest is stored at index time so that a later
+	/// verification run reads the value that was in effect when the
+	/// files table was populated — not a re-read of .gitignore that may
+	/// have changed since.
+	///
+	/// @return 64-character hex string.
+	std::string digest() const;
+
     private:
 	Mode mode_ = NORMAL;
 	std::unordered_set<std::string> lang_filter_set_;

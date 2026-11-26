@@ -146,6 +146,19 @@ char *postParsePhase(EngineContext *ctx, uint64_t project_id,
 				.count();
 	}
 
+	// Persist the effective filter policy digest at index time so
+	// verification runs read the value that was in effect when files were
+	// indexed — not a re-hash of .gitignore at run time that may have
+	// changed since (F3). A failure here is non-fatal: the run will
+	// fall back to the old re-hash path, but log it so the silent
+	// mismatch is observable.
+	if (!ctx->store->setFilterPolicyDigest(project_id, filter.digest())) {
+		fprintf(stderr,
+			"postParsePhase: setFilterPolicyDigest failed: %s "
+			"[module=engine, method=postParsePhase]\n",
+			ctx->store->error().c_str());
+	}
+
 	// P3: FTS index construction moved to the async path
 	// (runModelIndexSync in async_knowledge.cpp). This keeps the
 	// synchronous index path fast — the user sees "normal_ready" as

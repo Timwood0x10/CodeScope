@@ -577,6 +577,16 @@ class GraphStore {
 	/** Get a readiness flag for a project, or 0 if not set. */
 	int getProjectReadiness(uint64_t project_id, const char *field);
 
+	/** Store the filter policy digest computed at index time.
+	 *  This is the authoritative value that verification runs should
+	 *  read — not a re-hash of .gitignore at run time. */
+	bool setFilterPolicyDigest(uint64_t project_id,
+				   const std::string &digest);
+
+	/** Retrieve the filter policy digest stored at index time.
+	 *  Returns empty string if not set or on error. */
+	std::string getFilterPolicyDigest(uint64_t project_id);
+
 	// ── Shared Artifact ─────────────────────────────────────────
 
 	/**

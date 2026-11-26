@@ -107,6 +107,44 @@ bool GraphStore::runSchemaMigrations()
 		}
 	}
 
+	// Migration: add filter_policy_digest column to project_readiness.
+	// Stores the SHA-256 of the FilterPolicy that was in effect when the
+	// files table was last populated. A verification run reads this value
+	// instead of re-hashing .gitignore at run time, so two runs over the
+	// same indexed files always see the same digest — even if .gitignore
+	// was edited between index and run. Conversely, two indexes with
+	// different language filters produce different digests because the
+	// FilterPolicy's loaded rules differ.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(project_readiness)",
+				       -1, &probe, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"runSchemaMigrations: probe project_readiness "
+				"for filter_policy_digest failed: %s "
+				"[module=store, method=runSchemaMigrations]\n",
+				sqlite3_errmsg(db_));
+			if (probe)
+				sqlite3_finalize(probe);
+			return false;
+		}
+		bool has_fpd = false;
+		while (sqlite3_step(probe) == SQLITE_ROW) {
+			const char *col = reinterpret_cast<const char *>(
+				sqlite3_column_text(probe, 1));
+			if (col && std::string(col) == "filter_policy_digest")
+				has_fpd = true;
+		}
+		sqlite3_finalize(probe);
+		if (!has_fpd) {
+			if (!migrationExec("ALTER TABLE project_readiness "
+					   "ADD COLUMN filter_policy_digest "
+					   "TEXT NOT NULL DEFAULT ''"))
+				return false;
+		}
+	}
+
 	// Migration: rename architecture_edge's layer_upper/layer_lower to
 	// caller_module/callee_module (v0.7+).
 	//

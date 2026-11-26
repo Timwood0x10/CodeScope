@@ -1,4 +1,6 @@
 #include "filter_policy.h"
+#include "store/store_identity.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -905,4 +907,87 @@ bool FilterPolicy::isSourceFile(const std::string &path) const
 		return false;
 
 	return true;
+}
+
+std::string FilterPolicy::digest() const
+{
+	std::ostringstream ss;
+
+	// 1. Index mode — determines which skip dirs and suffixes are active.
+	switch (mode_) {
+	case NORMAL:
+		ss << "MODE=normal\n";
+		break;
+	case FAST:
+		ss << "MODE=fast\n";
+		break;
+	case STRICT:
+		ss << "MODE=strict\n";
+		break;
+	}
+
+	// 2. Language filter — determines which source files are accepted.
+	ss << "LANG_FILTER=";
+	if (has_lang_filter_) {
+		std::vector<std::string> langs(lang_filter_set_.begin(),
+					       lang_filter_set_.end());
+		std::sort(langs.begin(), langs.end());
+		for (size_t i = 0; i < langs.size(); ++i) {
+			if (i > 0)
+				ss << ",";
+			ss << langs[i];
+		}
+	} else {
+		ss << "all";
+	}
+	ss << "\n";
+
+	// 3. Language context — affects test/docs skip policy.
+	ss << "LANG_CONTEXT=" << lang_context_ << "\n";
+
+	// 4. .codescopeignore patterns — raw lines, sorted for determinism.
+	{
+		std::vector<std::string> pats(ignore_patterns_.begin(),
+					      ignore_patterns_.end());
+		std::sort(pats.begin(), pats.end());
+		ss << "IGNORE_PATTERNS=";
+		for (const auto &p : pats)
+			ss << p << ";";
+		ss << "\n";
+	}
+
+	// 5. .gitignore rules — pattern + flags, sorted for determinism.
+	{
+		std::vector<std::string> rules;
+		rules.reserve(gitignore_rules_.size());
+		for (const auto &r : gitignore_rules_) {
+			std::ostringstream rs;
+			rs << r.pattern << "|" << (r.negate ? "1" : "0") << "|"
+			   << (r.dir_only ? "1" : "0") << "|"
+			   << (r.anchored ? "1" : "0") << "|"
+			   << (r.has_star ? "1" : "0");
+			rules.push_back(rs.str());
+		}
+		std::sort(rules.begin(), rules.end());
+		ss << "GITIGNORE_RULES=";
+		for (const auto &r : rules)
+			ss << r << ";";
+		ss << "\n";
+	}
+
+	// 6. CODESCOPE_EXCLUDE_PATHS globs — sorted for determinism.
+	{
+		std::vector<std::string> pats(exclude_patterns_.begin(),
+					      exclude_patterns_.end());
+		std::sort(pats.begin(), pats.end());
+		ss << "EXCLUDE_PATTERNS=";
+		for (const auto &p : pats)
+			ss << p << ";";
+		ss << "\n";
+	}
+
+	// 7. Scan prefix — affects how anchored rules are applied.
+	ss << "SCAN_PREFIX=" << scan_prefix_ << "\n";
+
+	return store::Sha256Hex(ss.str());
 }

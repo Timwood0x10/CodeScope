@@ -417,6 +417,66 @@ int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 	sqlite3_finalize(stmt);
 	return val;
 }
+
+bool GraphStore::setFilterPolicyDigest(uint64_t project_id,
+				       const std::string &digest)
+{
+	error_.clear();
+
+	// Ensure the readiness row exists.
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+			  std::to_string(project_id) + ")")
+			  .c_str())) {
+		error_ = "[module=store, method=setFilterPolicyDigest] "
+			 "insert: " +
+			 error_;
+		return false;
+	}
+
+	const char *sql = "UPDATE project_readiness SET filter_policy_digest=? "
+			  "WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "[module=store, method=setFilterPolicyDigest] "
+			 "prepare: " +
+			 std::string(sqlite3_errmsg(db_));
+		return false;
+	}
+	sqlite3_bind_text(stmt, 1, digest.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(project_id));
+	int rc = sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (rc != SQLITE_DONE) {
+		error_ = "[module=store, method=setFilterPolicyDigest] "
+			 "step: " +
+			 std::string(sqlite3_errmsg(db_));
+		return false;
+	}
+	return true;
+}
+
+std::string GraphStore::getFilterPolicyDigest(uint64_t project_id)
+{
+	const char *sql = "SELECT filter_policy_digest FROM project_readiness "
+			  "WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "[module=store, method=getFilterPolicyDigest] "
+			 "prepare: " +
+			 std::string(sqlite3_errmsg(db_));
+		return {};
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(project_id));
+	std::string digest;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *text = sqlite3_column_text(stmt, 0);
+		if (text)
+			digest = reinterpret_cast<const char *>(text);
+	}
+	sqlite3_finalize(stmt);
+	return digest;
+}
 // ─── Shared Artifact ─────────────────────────────────────────────
 // Uses fork() + execvp() for zstd to avoid command injection via system().
 // Validates paths reject single-quote chars to prevent SQL injection in VACUUM/ATTACH.

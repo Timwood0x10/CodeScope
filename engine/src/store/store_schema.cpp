@@ -50,6 +50,10 @@ bool GraphStore::createSchema()
             -- while engine_get_enhancement_status always re-probes the
             -- canonical entity table for the true coverage count.
             metrics_ready INTEGER DEFAULT 0,
+            -- SHA-256 of the FilterPolicy in effect when files were last
+            -- indexed. Stored at index time so verification runs read the
+            -- authoritative value, not a re-hash of .gitignore at run time.
+            filter_policy_digest TEXT NOT NULL DEFAULT '',
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
